@@ -1,5 +1,5 @@
 // Not Defterim — arayüz. Veri: store.js, eşitleme: sync.js.
-import { Store, openBestBackend, SIZES, noteSearchText, fold, newItemId, sameContent } from './store.js';
+import { Store, openBestBackend, SIZES, noteSearchText, fold, newItemId, sameContent, fromRemote } from './store.js';
 import { SyncEngine, encodeSetup, decodeSetup, cleanRepo } from './sync.js';
 import { COLORS, PLATES, colorKey, injectPaletteCss } from './palette.js';
 import { h, icon, clear, fillIcons } from './dom.js';
@@ -13,7 +13,7 @@ const $ = (id) => document.getElementById(id);
 const els = {};
 let store;
 let sync;
-let prefs = { scheme: 'auto', plate: 'gray', sound: false };
+let prefs = { scheme: 'auto', plate: 'gray', sound: false, sort: 'updated', textSize: 'm', font: 'round' };
 const ui = { filter: 'all', query: '', cols: 4, cell: 90, cards: new Map(), firstRender: true, quiet: new Set(), renderQueued: false, sheetKind: null };
 const ed = { id: null, fresh: false, patch: null, timer: 0, items: [], pop: null, closing: false };
 let sheetOpen = false;
@@ -76,6 +76,8 @@ function applyPrefs() {
   const scheme = resolveScheme();
   root.dataset.scheme = scheme;
   root.dataset.plate = prefs.plate;
+  root.dataset.text = prefs.textSize || 'm';
+  root.dataset.font = prefs.font || 'round';
   fx.setSound(prefs.sound);
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', scheme === 'dark' ? '#0f1217' : '#f3efe8');
@@ -85,6 +87,25 @@ function savePrefs() {
   store.setMeta('prefs', prefs);
   try { localStorage.setItem('unb:prefs', JSON.stringify(prefs)); } catch {}
   applyPrefs();
+}
+
+// ------------------------------------------------------------------ odak / erişilebilirlik
+
+function setBackgroundInert(on) {
+  for (const el of [els.top, els.boardWrap, els.fabs]) {
+    if ('inert' in el) el.inert = on;
+    else el.setAttribute('aria-hidden', String(on));
+  }
+}
+
+let returnFocusTo = null;
+function rememberFocus() {
+  if (!returnFocusTo) returnFocusTo = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+}
+function restoreFocus() {
+  const el = returnFocusTo;
+  returnFocusTo = null;
+  if (el && el.isConnected && typeof el.focus === 'function') { try { el.focus({ preventScroll: true }); } catch {} }
 }
 
 // ------------------------------------------------------------------ bildirim
@@ -145,7 +166,17 @@ function visibleNotes() {
     });
   }
   if (ui.filter === 'trash') list.sort((a, b) => (b.trashedAt || 0) - (a.trashedAt || 0));
-  else list.sort((a, b) => (b.pinned - a.pinned) || ((b.updatedAt || 0) - (a.updatedAt || 0)));
+  else {
+    const colorIdx = (n) => COLORS.findIndex((c) => c.key === colorKey(n.color));
+    const byUpdated = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0);
+    const cmp = {
+      updated: byUpdated,
+      created: (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+      title: (a, b) => (a.title.trim() || '\uffff').localeCompare(b.title.trim() || '\uffff', 'tr') || byUpdated(a, b),
+      color: (a, b) => colorIdx(a) - colorIdx(b) || byUpdated(a, b),
+    }[prefs.sort] || byUpdated;
+    list.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || cmp(a, b));
+  }
   return list;
 }
 
@@ -207,8 +238,8 @@ function fillCard(el, n, d) {
   const quick = h('div', { class: 'quick' + (inTrash ? ' show' : '') });
   if (inTrash) {
     quick.append(
-      h('button', { type: 'button', 'aria-label': 'Geri yükle', onclick: (e) => { e.stopPropagation(); store.restore(n.id); fx.snap(); } }, icon('restore', 17), 'Geri al'),
-      h('button', { type: 'button', 'aria-label': 'Kalıcı sil', onclick: (e) => { e.stopPropagation(); purgeWithConfirm(n.id); } }, icon('x', 17), 'Sil'),
+      h('button', { type: 'button', onclick: (e) => { e.stopPropagation(); store.restore(n.id); fx.snap(); } }, icon('restore', 17), 'Geri al'),
+      h('button', { type: 'button', onclick: (e) => { e.stopPropagation(); purgeWithConfirm(n.id); } }, icon('x', 17), 'Sil'),
     );
   } else {
     quick.append(
@@ -295,7 +326,7 @@ async function trashCard(id) {
 }
 
 function purgeWithConfirm(id) {
-  if (!window.confirm('Bu not kalıcı olarak silinecek. Emin misin?')) return;
+  if (!window.confirm('Bu not kalıcı olarak silinecek. (Depo geçmişindeki eski sürümleri GitHub\'da kalabilir.) Emin misin?')) return;
   store.purge(id);
 }
 
@@ -318,8 +349,11 @@ function createNote(type) {
 // ------------------------------------------------------------------ editör
 
 function autosize(ta) {
+  const sc = ta.closest('.ed-scroll');
+  const y = sc ? sc.scrollTop : 0;
   ta.style.height = 'auto';
   ta.style.height = ta.scrollHeight + 'px';
+  if (sc) sc.scrollTop = y;
 }
 
 function buildEdStuds() {
@@ -329,6 +363,42 @@ function buildEdStuds() {
 
 function setEdInfo(text) { els.edInfo.textContent = text; }
 
+/** Notun düz metin hâli (kopyala / paylaş / kelime sayısı için). */
+function noteText(n) {
+  const parts = [];
+  if (n.title.trim()) parts.push(n.title.trim());
+  if (n.type === 'list') parts.push((n.items || []).filter((i) => i.t.trim()).map((i) => (i.d ? '☑ ' : '☐ ') + i.t).join('\n'));
+  else if (n.body.trim()) parts.push(n.body);
+  return parts.join('\n\n');
+}
+
+function insertDate() {
+  const ta = els.edBody;
+  if (ta.hidden) return;
+  const d = new Date();
+  const text = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' }).format(d) + ' ' + tfmt.format(d);
+  ta.focus({ preventScroll: true });
+  const s = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
+  const e = ta.selectionEnd == null ? s : ta.selectionEnd;
+  ta.setRangeText(text, s, e, 'end');
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+async function copyCurrentNote() {
+  flushSave();
+  const n = store.get(ed.id);
+  if (!n) return;
+  const ok = await copyText(noteText(n));
+  toast(ok ? 'Not kopyalandı.' : 'Kopyalanamadı.');
+}
+
+async function shareCurrentNote() {
+  flushSave();
+  const n = store.get(ed.id);
+  if (!n || !navigator.share) return;
+  try { await navigator.share({ title: n.title || 'Not', text: noteText(n) }); } catch {}
+}
+
 function updateEdInfo() {
   const n = ed.id && store.get(ed.id);
   if (!n) return;
@@ -336,7 +406,8 @@ function updateEdInfo() {
   let st = '';
   if (sync.isConfigured()) st = n._dirty ? 'Eşitlenmeyi bekliyor' : 'Eşitlendi';
   else st = 'Yalnızca bu cihazda';
-  setEdInfo(`${when} · ${st}`);
+  const words = noteText(n).trim().split(/\s+/).filter(Boolean).length;
+  setEdInfo(words + ' kelime · ' + when + ' · ' + st);
 }
 
 function fillEditor(n) {
@@ -352,6 +423,7 @@ function fillEditor(n) {
 function setTypeUi(n) {
   const isList = n.type === 'list';
   els.edBody.hidden = isList;
+  els.edDate.hidden = isList;
   els.edList.hidden = !isList;
   clear(els.edType).append(icon(isList ? 'text' : 'list'));
   els.edType.setAttribute('aria-label', isList ? 'Düz metne çevir' : 'Listeye çevir');
@@ -571,21 +643,40 @@ function openPopover(kind) {
 }
 
 function syncViewport() {
-  if (!ed.id) return;
   const vv = window.visualViewport;
-  if (vv && isMobileLayout()) {
-    els.ed.style.top = vv.offsetTop + 'px';
-    els.ed.style.height = vv.height + 'px';
-    els.ed.style.bottom = 'auto';
-  } else {
-    els.ed.style.top = els.ed.style.height = els.ed.style.bottom = '';
+  const mobile = !!vv && isMobileLayout();
+  if (ed.id) {
+    if (mobile) {
+      els.ed.style.top = vv.offsetTop + 'px';
+      els.ed.style.height = vv.height + 'px';
+      els.ed.style.bottom = 'auto';
+    } else {
+      els.ed.style.top = els.ed.style.height = els.ed.style.bottom = '';
+    }
   }
+  if (sheetOpen) {
+    if (mobile) {
+      els.sheet.style.top = vv.offsetTop + 'px';
+      els.sheet.style.height = vv.height + 'px';
+      els.sheet.style.bottom = 'auto';
+    } else {
+      els.sheet.style.top = els.sheet.style.height = els.sheet.style.bottom = '';
+    }
+  }
+}
+
+function lockScroll(on) {
+  document.documentElement.classList.toggle('modal-open', on);
+  document.body.classList.toggle('modal-open', on);
 }
 
 function openEditor(id, { fromRect = null, fresh = false } = {}) {
   const n = store.get(id);
   if (!n || ed.id) return;
   closeSheetNow();
+  rememberFocus();
+  ed.scrollY = window.scrollY;
+  setBackgroundInert(true);
   ed.id = id;
   ed.fresh = fresh;
   ed.patch = null;
@@ -594,7 +685,7 @@ function openEditor(id, { fromRect = null, fresh = false } = {}) {
   const rect = fromRect || (card ? card.getBoundingClientRect() : null);
   fillEditor(n);
   els.editor.hidden = false;
-  document.body.classList.add('modal-open');
+  lockScroll(true);
   syncViewport();
   try { history.pushState({ ed: id }, ''); } catch {}
   if (card) card.style.visibility = 'hidden';
@@ -605,7 +696,9 @@ function openEditor(id, { fromRect = null, fresh = false } = {}) {
   requestAnimationFrame(() => {
     if (n.type === 'text') autosize(els.edBody);
     els.edList.querySelectorAll('textarea').forEach(autosize);
+    let focused = false;
     if (fresh || finePointer()) {
+      focused = true;
       if (fresh && n.type === 'list') {
         const ta = els.edList.querySelector('textarea');
         if (ta) ta.focus({ preventScroll: true });
@@ -614,8 +707,9 @@ function openEditor(id, { fromRect = null, fresh = false } = {}) {
         els.edBody.focus({ preventScroll: true });
         const l = els.edBody.value.length;
         els.edBody.setSelectionRange(l, l);
-      }
+      } else focused = false;
     }
+    if (!focused) els.edBack.focus({ preventScroll: true });
   });
 }
 
@@ -645,10 +739,10 @@ async function closeEditorAnimated() {
   if (n && n.trashedAt) {
     await fx.crumble(els.ed);
   } else if (card && n) {
-    document.body.classList.remove('modal-open');
+    lockScroll(false);
     const r0 = card.getBoundingClientRect();
     if (r0.bottom < 0 || r0.top > window.innerHeight) card.scrollIntoView({ block: 'center' });
-    document.body.classList.add('modal-open');
+    lockScroll(true);
     card.style.visibility = 'hidden';
     anim = fx.morph(els.ed, card.getBoundingClientRect(), { reverse: true, duration: 400 });
   } else {
@@ -659,8 +753,11 @@ async function closeEditorAnimated() {
   els.editor.hidden = true;
   for (const e of [els.ed, els.edBackdrop, els.edPaper]) e.getAnimations && e.getAnimations().forEach((a) => a.cancel());
   els.ed.style.top = els.ed.style.height = els.ed.style.bottom = '';
-  document.body.classList.remove('modal-open');
+  lockScroll(false);
+  setBackgroundInert(false);
   if (card) { card.style.visibility = ''; if (n && !n.trashedAt) { fx.land(card); fx.snap(0.8); } }
+  restoreFocus();
+  if (typeof ed.scrollY === 'number' && Math.abs(window.scrollY - ed.scrollY) > 1) window.scrollTo(0, ed.scrollY);
   ed.id = null;
   ed.closing = false;
   ed.fresh = false;
@@ -724,8 +821,12 @@ function openSheet(title, content, kind) {
   ui.sheetKind = kind;
   if (sheetOpen) return;
   sheetOpen = true;
+  rememberFocus();
+  setBackgroundInert(true);
   els.sheet.hidden = false;
-  document.body.classList.add('modal-open');
+  lockScroll(true);
+  syncViewport();
+  requestAnimationFrame(() => els.sheetClose.focus({ preventScroll: true }));
   try { history.pushState({ sheet: 1 }, ''); } catch {}
   if (fx.motionOK() && els.sheetPanel.animate) {
     const small = window.matchMedia('(min-width: 700px)').matches;
@@ -767,7 +868,8 @@ function closeSheetNow() {
   els.sheet.hidden = true;
   for (const e of [els.sheetPanel, els.sheetBackdrop]) e.getAnimations && e.getAnimations().forEach((a) => a.cancel());
   ui.sheetKind = null;
-  if (!ed.id) document.body.classList.remove('modal-open');
+  els.sheet.style.top = els.sheet.style.height = els.sheet.style.bottom = '';
+  if (!ed.id) { lockScroll(false); setBackgroundInert(false); restoreFocus(); }
 }
 
 // ------------------------------------------------------------------ eşitleme arayüzü
@@ -869,6 +971,14 @@ function renderSettings() {
       style: { background: p.hex }, onclick: () => { prefs.plate = p.key; savePrefs(); renderSettings(); fx.snap(); },
     }, prefs.plate === p.key ? icon('check', 20) : null));
   }
+  look.append(
+    h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Yazı boyutu', h('span', { class: 'sub' }, 'Not yazarken')),
+      seg([['s', 'Küçük'], ['m', 'Orta'], ['l', 'Büyük']], prefs.textSize, (v) => { prefs.textSize = v; savePrefs(); renderSettings(); })),
+    h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Yazı tipi'),
+      seg([['round', 'Yuvarlak'], ['system', 'Sade'], ['mono', 'Kod']], prefs.font, (v) => { prefs.font = v; savePrefs(); renderSettings(); })),
+    h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Sıralama'),
+      seg([['updated', 'Düzenleme'], ['created', 'Oluşturma'], ['title', 'Başlık'], ['color', 'Renk']], prefs.sort, (v) => { prefs.sort = v; savePrefs(); renderSettings(); render(); })),
+  );
   look.append(h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Taban plakası', h('span', { class: 'sub' }, 'Tuğlaların oturduğu zemin')), plates));
   look.append(h('div', { class: 'row' },
     h('span', { class: 'lbl' }, 'Tuk sesi', h('span', { class: 'sub' }, 'Tuğla yerine oturunca hafif bir tık')),
@@ -917,26 +1027,32 @@ function openSettings() {
 }
 
 async function copyText(text) {
+  // Önce eşzamanlı yöntem: dokunma/tıklama hareketinin içinde güvenle çalışır (iOS Safari dahil).
+  const ta = h('textarea', { readonly: '', style: { position: 'fixed', opacity: '0', top: '0', left: '0', fontSize: '16px' } });
+  ta.value = text;
+  document.body.append(ta);
+  ta.focus({ preventScroll: true });
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  ta.remove();
+  if (ok) return true;
   try {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    const ta = h('textarea', { style: { position: 'fixed', opacity: '0', top: '0' } });
-    ta.value = text;
-    document.body.append(ta);
-    ta.select();
-    let ok = false;
-    try { ok = document.execCommand('copy'); } catch {}
-    ta.remove();
-    return ok;
+    return false;
   }
 }
 
 async function copySetupCode() {
   const c = sync.config;
   if (!c || !c.token) return;
-  const ok = await copyText(encodeSetup({ repo: c.repo, token: c.token }));
-  toast(ok ? 'Kurulum kodu kopyalandı. Diğer cihazda yapıştır.' : 'Kopyalanamadı. Tarayıcı izin vermedi.');
+  const code = encodeSetup({ repo: c.repo, token: c.token });
+  const ok = await copyText(code);
+  if (ok) toast('Kurulum kodu kopyalandı. Diğer cihazda yapıştır.');
+  else window.prompt('Kurulum kodu — kopyala ve diğer cihazda yapıştır:', code);
 }
 
 function disconnectSync() {
@@ -976,18 +1092,16 @@ function importNotes() {
     input.remove();
     if (!f) return;
     try {
+      if (f.size > 10 * 1024 * 1024) throw new Error('big');
       const data = JSON.parse(await f.text());
       const list = Array.isArray(data) ? data : data.notes;
       if (!Array.isArray(list)) throw new Error('bad');
       let added = 0;
-      for (const raw of list) {
-        if (!raw || typeof raw !== 'object' || !raw.id || !/^[A-Za-z0-9_-]+$/.test(raw.id) || store.get(raw.id)) continue;
-        const items = Array.isArray(raw.items) ? raw.items.map((i) => ({ id: String(i.id || newItemId()), t: String(i.t ?? ''), d: !!i.d })) : [];
-        store.create({
-          id: raw.id, type: raw.type === 'list' ? 'list' : 'text', title: String(raw.title || ''), body: String(raw.body || ''),
-          items, color: colorKey(raw.color), size: SIZES.includes(raw.size) ? raw.size : 'auto', pinned: !!raw.pinned,
-          createdAt: Number(raw.createdAt) || Date.now(), updatedAt: Number(raw.updatedAt) || Date.now(), trashedAt: raw.trashedAt ? Number(raw.trashedAt) : null,
-        });
+      for (const raw of list.slice(0, 20000)) {
+        if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(raw.id) || store.get(raw.id)) continue;
+        const clean = fromRemote(raw, raw.id);
+        if (!clean) continue;
+        store.create({ ...clean, color: colorKey(clean.color) });
         added++;
       }
       toast(added ? `${added} not yüklendi.` : 'Yeni not bulunamadı (hepsi zaten var).');
@@ -1042,7 +1156,7 @@ function openWizard(step) {
     );
 
   const tokenStep = () => {
-    const tokenIn = h('input', { type: 'text', id: 'w-token', placeholder: 'github_pat_… ya da UNB1.… kurulum kodu', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+    const tokenIn = h('input', { type: 'text', class: 'secret', id: 'w-token', placeholder: 'github_pat_… ya da UNB1.… kurulum kodu', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
     const repoIn = h('input', { type: 'text', id: 'w-repo', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
     repoIn.value = repoDefault;
     const msg = h('div');
@@ -1054,6 +1168,15 @@ function openWizard(step) {
       if (code) { token = code.token; repo = code.repo; }
       if (!token) { clear(msg).append(h('div', { class: 'note bad' }, 'Önce anahtarı ya da kurulum kodunu yapıştır.')); return; }
       if (!cleanRepo(repo)) { clear(msg).append(h('div', { class: 'note bad' }, 'Depo adı "kullanici/depo" biçiminde olmalı.')); return; }
+      const localCount = store.all().filter((x) => !x._purge).length;
+      const prevRepo = sync.config && sync.config.repo;
+      if (localCount && (!prevRepo || prevRepo.toLowerCase() !== cleanRepo(repo).toLowerCase())) {
+        const ok = window.confirm(
+          `Bu cihazdaki ${localCount} not "${cleanRepo(repo)}" deposuna gönderilecek. ` +
+          'Bu depo sana mı ait? Tanımadığın bir kaynaktan geldiyse "İptal"e bas.',
+        );
+        if (!ok) return;
+      }
       btn.setAttribute('disabled', '');
       btn.textContent = 'Bağlanıyor…';
       clear(msg);
@@ -1164,6 +1287,10 @@ function wire() {
   els.edColor.addEventListener('click', () => openPopover('color'));
   els.edSize.addEventListener('click', () => openPopover('size'));
   els.edTrash.addEventListener('click', trashFromEditor);
+  els.edCopy.addEventListener('click', copyCurrentNote);
+  els.edShare.addEventListener('click', shareCurrentNote);
+  els.edShare.hidden = !navigator.share;
+  els.edDate.addEventListener('click', insertDate);
 
   els.edTitle.addEventListener('input', () => queueSave({ title: els.edTitle.value }));
   els.edTitle.addEventListener('keydown', (e) => {
@@ -1257,8 +1384,38 @@ function registerSW() {
 
 // ------------------------------------------------------------------ başlat
 
+/** Kısayollardan (?new=text|list) ve "Paylaş" hedefinden (?title&text&url) gelen istekler. */
+function handleLaunchParams() {
+  let q;
+  try { q = new URLSearchParams(location.search); } catch { return; }
+  const kind = q.get('new');
+  const shared = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n');
+  if (!kind && !shared) return;
+  try { history.replaceState(null, '', location.pathname); } catch {}
+  if (shared) {
+    const title = (q.get('title') || '').slice(0, 200);
+    const body = [q.get('text'), q.get('url')].filter(Boolean).join('\n').slice(0, 20000);
+    // Dışarıdan gelen içerik kendiliğinden not olmaz; kullanıcı onaylar.
+    setTimeout(() => {
+      toast('Paylaşılan içerik var: not olarak eklensin mi?', {
+        ms: 15000,
+        action: {
+          label: 'Ekle',
+          fn: () => {
+            const n = store.create({ title, body, color: colorKey(store.getMeta('lastColor', 'yellow')) });
+            ui.quiet.add(n.id);
+            render();
+          },
+        },
+      });
+    }, 600);
+  } else if (kind === 'text' || kind === 'list') {
+    setTimeout(() => createNote(kind), 250);
+  }
+}
+
 async function boot() {
-  for (const id of ['top', 'q', 'qClear', 'searchToggle', 'syncBtn', 'settingsBtn', 'chips', 'board', 'grid', 'empty', 'emptyTitle', 'emptyText',
+  for (const id of ['top', 'boardWrap', 'fabs', 'edCopy', 'edShare', 'edDate', 'q', 'qClear', 'searchToggle', 'syncBtn', 'settingsBtn', 'chips', 'board', 'grid', 'empty', 'emptyTitle', 'emptyText',
     'fabNew', 'fabList', 'editor', 'edBackdrop', 'ed', 'edStuds', 'edBack', 'edPin', 'edType', 'edColor', 'edSize', 'edTrash', 'edPaper',
     'edScroll', 'edTitle', 'edBody', 'edList', 'edInfo', 'pop', 'sheet', 'sheetBackdrop', 'sheetPanel', 'sheetTitle', 'sheetClose', 'sheetBody', 'toasts']) {
     els[id] = $(id);
@@ -1271,7 +1428,15 @@ async function boot() {
   prefs = { ...prefs, ...store.getMeta('prefs', {}) };
   applyPrefs();
 
-  sync = new SyncEngine(store, { apiBase: (() => { try { return localStorage.getItem('unb_api') || undefined; } catch { return undefined; } })() });
+  let lastPersistToast = 0;
+  store.onPersistError = () => {
+    if (Date.now() - lastPersistToast < 20000) return;
+    lastPersistToast = Date.now();
+    toast('Not bu cihaza kaydedilemedi. Depolama dolu ya da kapalı olabilir; yedek indirmeyi dene.', { ms: 9000 });
+  };
+  // Geliştirme: yalnızca yerel adreslerde sahte GitHub'a yönlendirme yapılabilir.
+  const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  sync = new SyncEngine(store, { apiBase: (() => { try { return (localHost && localStorage.getItem('unb_api')) || undefined; } catch { return undefined; } })() });
   buildChips();
   wire();
   layoutGrid();
@@ -1284,11 +1449,13 @@ async function boot() {
   sync.onStatus(onSyncStatus);
   onSyncStatus(sync.status);
   try { history.replaceState(null, ''); } catch {}
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch {}
   sync.start();
   registerSW();
+  handleLaunchParams();
   setTimeout(() => { maybeFirstRun(); maybeIosHint(); }, 700);
 
-  window.__unb = { store, sync, render, VERSION }; // hata ayıklama için
+  if (localHost) window.__unb = { store, sync, render, VERSION }; // hata ayıklama: yalnızca yerel geliştirmede
 }
 
 boot().catch((e) => {

@@ -8,6 +8,7 @@ const SHELL = [
   'manifest.webmanifest',
   'css/app.css',
   'js/app.js',
+  'js/boot-theme.js',
   'js/store.js',
   'js/sync.js',
   'js/dom.js',
@@ -44,6 +45,17 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // api.github.com vb. doğrudan ağa gider
 
+  // ?title=…&text=… (paylaşım) ve ?new=… (kısayol) istekleri önbelleğe yazılmaz.
+  if (url.search) {
+    event.respondWith(
+      fetch(req).catch(async () => {
+        const c = await caches.open(CACHE);
+        return (req.mode === 'navigate' && ((await c.match('index.html')) || (await c.match('./')))) || Response.error();
+      }),
+    );
+    return;
+  }
+
   const isFont = /\.(woff2?|png|svg)$/.test(url.pathname);
   event.respondWith(
     (async () => {
@@ -52,15 +64,19 @@ self.addEventListener('fetch', (event) => {
         const hit = await cache.match(req);
         if (hit) return hit;
       }
-      try {
-        const res = await fetch(req, { cache: 'no-cache' });
+      const fallback = async () =>
+        (await cache.match(req)) ||
+        (req.mode === 'navigate' ? (await cache.match('index.html')) || (await cache.match('./')) : null);
+      const network = fetch(req, { cache: 'no-cache' }).then((res) => {
         if (res && res.ok) cache.put(req, res.clone()).catch(() => {});
         return res;
-      } catch (err) {
-        const hit = (await cache.match(req)) || (req.mode === 'navigate' ? await cache.match('index.html') : null) || (await cache.match('./'));
-        if (hit) return hit;
-        throw err;
-      }
+      });
+      event.waitUntil(network.catch(() => {}));
+      const cached = await fallback();
+      if (!cached) return network;
+      // Ağ yavaşsa 3 sn sonra önbellekten aç (zayıf bağlantıda boş ekran kalmasın).
+      const timer = new Promise((resolve) => setTimeout(() => resolve(cached), 3000));
+      return Promise.race([network.catch(() => cached), timer]);
     })(),
   );
 });

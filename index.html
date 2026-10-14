@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Not Defterim</title>
   <meta name="description" content="Unicornlu Not Defterim — Lego tuğlalarından notlar, tüm cihazlarında eşitlenir.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.github.com; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#f3efe8">
   <meta name="color-scheme" content="light dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -17,17 +19,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="preload" href="fonts/fredoka-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
-  <script>
-    // Tema ilk boyamadan önce uygulanır (beyaz parlama olmasın).
-    try {
-      var p = JSON.parse(localStorage.getItem('unb:prefs') || '{}');
-      var d = document.documentElement;
-      var s = p.scheme || 'auto';
-      if (s === 'auto') s = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      d.dataset.scheme = s;
-      d.dataset.plate = p.plate || 'gray';
-    } catch (e) {}
-  </script>
+  <script src="js/boot-theme.js"></script>
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -49,7 +41,7 @@
     <nav class="chips" id="chips" aria-label="Renge göre filtrele"></nav>
   </header>
 
-  <main class="board-wrap">
+  <main class="board-wrap" id="boardWrap">
     <div class="board" id="board">
       <div class="grid" id="grid"></div>
       <div class="empty" id="empty" hidden>
@@ -84,7 +76,14 @@
           <textarea id="edBody" class="ed-body" placeholder="Notunu buraya yaz…" rows="1" aria-label="Not"></textarea>
           <div id="edList" class="ed-list" hidden></div>
         </div>
-        <footer class="ed-foot"><span id="edInfo"></span></footer>
+        <footer class="ed-foot">
+          <span id="edInfo"></span>
+          <span class="ed-actions">
+            <button type="button" id="edDate" class="ed-act">Tarih ekle</button>
+            <button type="button" id="edCopy" class="ed-act">Kopyala</button>
+            <button type="button" id="edShare" class="ed-act" hidden>Paylaş</button>
+          </span>
+        </footer>
       </div>
       <div class="pop" id="pop" hidden></div>
     </section>

@@ -52,13 +52,11 @@ export function decodeSetup(text) {
 export function cleanRepo(input) {
   let s = String(input || '').trim();
   s = s.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(s) ? s : '';
+  return /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(s) ? s : '';
 }
 
-function shortLabel(n) {
-  const t = (n.title || n.body || (n.items && n.items[0] && n.items[0].t) || 'Adsız not').replace(/\s+/g, ' ').trim();
-  return t.length > 60 ? t.slice(0, 57) + '…' : t;
-}
+// Commit mesajlarına not başlığı yazılmaz: depo geçmişinde içerik ipucu kalmasın.
+const MAX_BLOB = 2_000_000;
 
 export class SyncEngine {
   constructor(store, opts = {}) {
@@ -302,6 +300,7 @@ export class SyncEngine {
 
     await this._pool(toFetch, this.concurrency, async ({ id, sha }) => {
       const r = await this._gh(cfg, `${repo}/git/blobs/${sha}`);
+      if (r.data && r.data.size > MAX_BLOB) return; // aşırı büyük dosyayı atla
       let data = null;
       try { data = JSON.parse(b64decode(r.data.content)); } catch {}
       this._applyBlob(id, sha, data);
@@ -429,7 +428,7 @@ export class SyncEngine {
       try {
         const res = await this._gh(cfg, url, {
           method: 'PUT',
-          body: { message: `Sil: ${shortLabel(n)}`, content: b64encode(JSON.stringify(tomb)), sha: n._sha, branch: cfg.branch },
+          body: { message: 'Not silindi', content: b64encode(JSON.stringify(tomb)), sha: n._sha, branch: cfg.branch },
         });
         const sha = res.data && res.data.content && res.data.content.sha;
         if (sha) this._markTomb(id, sha);
@@ -448,7 +447,7 @@ export class SyncEngine {
 
     const rev = n._rev;
     const body = {
-      message: `${n.trashedAt ? 'Çöp' : 'Not'}: ${shortLabel(n)}`,
+      message: n.trashedAt ? 'Not çöpe taşındı' : 'Not güncellendi',
       content: b64encode(JSON.stringify(toRemote(n), null, 2)),
       branch: cfg.branch,
     };

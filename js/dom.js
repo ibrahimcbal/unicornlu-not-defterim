@@ -56,6 +56,7 @@ const PATHS = {
 };
 
 export function icon(name, size = 22) {
+  size = Number(size) || 22; // innerHTML'e yalnızca sayı ve sabit yol girer
   const span = document.createElement('span');
   span.className = 'ic';
   span.innerHTML =

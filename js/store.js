@@ -63,16 +63,17 @@ export function fromRemote(raw, id) {
   const type = raw.type === 'list' ? 'list' : 'text';
   const items = Array.isArray(raw.items)
     ? raw.items
+        .slice(0, 2000)
         .filter((i) => i && typeof i === 'object')
-        .map((i) => ({ id: String(i.id || newItemId()), t: String(i.t ?? ''), d: !!i.d }))
+        .map((i) => ({ id: String(i.id || newItemId()).slice(0, 40), t: String(i.t ?? '').slice(0, 2000), d: !!i.d }))
     : [];
   const size = raw.size === 'auto' || SIZES.includes(raw.size) ? raw.size : 'auto';
-  const num = (v, d) => (typeof v === 'number' && isFinite(v) ? v : d);
+  const num = (v, d) => (typeof v === 'number' && isFinite(v) && Math.abs(v) <= 8.64e15 ? v : d);
   return {
     id,
     type,
-    title: String(raw.title ?? ''),
-    body: String(raw.body ?? ''),
+    title: String(raw.title ?? '').slice(0, 500),
+    body: String(raw.body ?? '').slice(0, 300000),
     items,
     color: String(raw.color || 'yellow'),
     size,
@@ -302,7 +303,11 @@ export class Store {
     this.queue = this.queue
       .then(job)
       .then(() => { if (msg) this._announce(msg); })
-      .catch((e) => { this.persistError = e; console.error('Kayıt hatası', e); });
+      .catch((e) => {
+        this.persistError = e;
+        console.error('Kayıt hatası', e);
+        if (typeof this.onPersistError === 'function') { try { this.onPersistError(e); } catch {} }
+      });
   }
   flush() { return this.queue; }
 
