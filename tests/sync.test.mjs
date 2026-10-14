@@ -447,3 +447,25 @@ test('x5: an unreadable remote file does not stop other dirty notes from uploadi
   assert.equal(remoteNote(mock, p.id)?.body, 'v2', 'P was never uploaded');
   assert.equal(a.engine.status.state, 'ok');
 });
+
+test('n: a 409 caused by a branch-head race retries instead of creating a conflict copy', async () => {
+  const mock = createMockGitHub();
+  const orig = mock.fetch;
+  let armed = false;
+  mock.fetch = async (url, init) => {
+    if (armed && init && init.method === 'PUT') {
+      armed = false;
+      mock.failNext(409, 'is at abc123 but expected def456');
+    }
+    return orig(url, init);
+  };
+  const a = await makeDevice(mock);
+  const x = a.store.create({ title: 'X', body: 'v1' });
+  await a.engine.syncNow();
+  a.store.edit(x.id, { body: 'v2' });
+  armed = true;
+  await a.engine.syncNow();
+  assert.equal(a.store.all().length, 1, 'a spurious conflict copy was created');
+  assert.equal(remoteNote(mock, x.id).body, 'v2');
+  assert.equal(a.store.get(x.id)._dirty, false);
+});

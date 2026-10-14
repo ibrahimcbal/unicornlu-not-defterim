@@ -428,7 +428,7 @@ export class SyncEngine {
       try {
         const res = await this._gh(cfg, url, {
           method: 'PUT',
-          body: { message: 'Not silindi', content: b64encode(JSON.stringify(tomb)), sha: n._sha, branch: cfg.branch },
+          body: { message: 'Not silindi', content: b64encode(JSON.stringify(tomb)), sha: n._sha },
         });
         const sha = res.data && res.data.content && res.data.content.sha;
         if (sha) this._markTomb(id, sha);
@@ -449,15 +449,19 @@ export class SyncEngine {
     const body = {
       message: n.trashedAt ? 'Not çöpe taşındı' : 'Not güncellendi',
       content: b64encode(JSON.stringify(toRemote(n), null, 2)),
-      branch: cfg.branch,
     };
     if (n._sha) body.sha = n._sha;
     let res;
     try {
       res = await this._gh(cfg, url, { method: 'PUT', body });
     } catch (e) {
-      if (e.kind === 'conflict' && attempt < 2) {
+      if (e.kind === 'conflict' && attempt < 3) {
         const f = await this._getRemoteFile(cfg, id);
+        if (f && f.sha === n._sha) {
+          // Dosya değişmemiş: iki cihaz aynı anda yazınca dalın ucu yarışmış (409). Kısa bekleyip yeniden dene.
+          await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+          return this._pushOne(cfg, id, attempt + 1);
+        }
         if (!f) this.store.mutate(id, (c) => (c ? { ...c, _sha: null } : undefined), { origin: 'sync' });
         else this._applyBlob(id, f.sha, f.data);
         // Uzak dosya yok / bozuk / güncel sha alındı: yeniden dene.

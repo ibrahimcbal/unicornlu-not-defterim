@@ -5,7 +5,7 @@ import { COLORS, PLATES, colorKey, injectPaletteCss } from './palette.js';
 import { h, icon, clear, fillIcons } from './dom.js';
 import * as fx from './fx.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const DEFAULT_REPO = 'ibrahimcbal/unicornlu-notlar';
 const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new';
 

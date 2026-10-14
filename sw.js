@@ -1,6 +1,6 @@
 // Not Defterim servis çalışanı: uygulama dosyalarını önbelleğe alır, çevrimdışı açılmayı sağlar.
 // Strateji: aynı kaynaktaki dosyalar için önce ağ (hep güncel), ağ yoksa önbellek. GitHub API'ye hiç dokunmaz.
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CACHE = 'not-defterim-' + VERSION;
 const SHELL = [
   './',
