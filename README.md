@@ -41,6 +41,22 @@ Safari'de aç → Paylaş → **Ana Ekrana Ekle**. Kurulum kodunu **ana ekrandak
 ### Windows / Mac
 Chrome veya Edge: adres çubuğundaki *Yükle* simgesi. Safari (Mac): Dosya → Dock'a Ekle.
 
+## Yayınlama (GitHub Pages)
+
+Uygulama dosyaları herkese açık bir sitede durmalıdır, notların ise **özel** depoda. Bu yüzden:
+
+1. Bu depoyu **public** yap (içinde yalnızca uygulama kodu var; notlar ayrı özel depoda): Settings → Danger Zone → *Change visibility*.
+2. Settings → Pages → *Deploy from a branch* → `main` / `(root)` → Save.
+3. Adres: `https://<kullanıcı>.github.io/unicornlu-not-defterim/`
+
+## Gizlilik ve güvenlik
+
+- Notlar yalnızca **özel veri deponda** durur; uygulama sitesinde not yoktur.
+- Anahtar yalnızca o depoya erişir (Contents: Read and write). Bu cihazın tarayıcı depolamasında tutulur.
+- **Kurulum kodu anahtarını içerir.** Yalnızca kendi cihazlarına gönder, başkasıyla paylaşma.
+- Silinen notların eski sürümleri GitHub commit geçmişinde kalır. Commit mesajlarında not başlığı yazılmaz.
+- Anahtarın sızdığından şüphelenirsen GitHub → Settings → Developer settings → Personal access tokens bölümünden sil, yenisini oluştur.
+
 ## Kısayollar (bilgisayarda)
 
 | Tuş | İş |
