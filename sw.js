@@ -1,6 +1,6 @@
 // Not Defterim servis çalışanı: uygulama dosyalarını önbelleğe alır, çevrimdışı açılmayı sağlar.
 // Strateji: aynı kaynaktaki dosyalar için önce ağ (hep güncel), ağ yoksa önbellek. GitHub API'ye hiç dokunmaz.
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const CACHE = 'not-defterim-' + VERSION;
 const SHELL = [
   './',
@@ -14,6 +14,8 @@ const SHELL = [
   'js/dom.js',
   'js/palette.js',
   'js/fx.js',
+  'js/arrange.js',
+  'js/remind.js',
   'fonts/fredoka-latin-wght-normal.woff2',
   'fonts/fredoka-latin-ext-wght-normal.woff2',
   'icons/icon.svg',
@@ -77,6 +79,24 @@ self.addEventListener('fetch', (event) => {
       // Ağ yavaşsa 3 sn sonra önbellekten aç (zayıf bağlantıda boş ekran kalmasın).
       const timer = new Promise((resolve) => setTimeout(() => resolve(cached), 3000));
       return Promise.race([network.catch(() => cached), timer]);
+    })(),
+  );
+});
+
+// Bildirime dokununca uygulamayı öne getir, ilgili notu aç.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const id = event.notification.data && event.notification.data.id;
+  event.waitUntil(
+    (async () => {
+      const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (all.length) {
+        const c = all[0];
+        try { await c.focus(); } catch {}
+        if (id) c.postMessage({ type: 'open-note', id });
+        return;
+      }
+      await self.clients.openWindow('./' + (id ? '?open=' + encodeURIComponent(id) : ''));
     })(),
   );
 });

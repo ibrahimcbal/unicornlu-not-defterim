@@ -469,3 +469,74 @@ test('n: a 409 caused by a branch-head race retries instead of creating a confli
   assert.equal(remoteNote(mock, x.id).body, 'v2');
   assert.equal(a.store.get(x.id)._dirty, false);
 });
+
+test('o: a layout change on A and a content edit on B merge without a conflict copy', async () => {
+  const mock = createMockGitHub();
+  const a = await makeDevice(mock);
+  const x = a.store.create({ title: 'X', body: 'v1', color: 'blue' });
+  await a.engine.syncNow();
+  const b = await makeDevice(mock);
+
+  a.store.edit(x.id, { pinned: true, color: 'red' });
+  await a.engine.syncNow();
+  b.store.edit(x.id, { body: 'v2 from B' });
+  await b.engine.syncNow();
+
+  assert.equal(b.store.all().length, 1, 'a spurious conflict copy appeared on B');
+  const nb = b.store.get(x.id);
+  assert.equal(nb.body, 'v2 from B');
+  assert.equal(nb.pinned, true);
+  assert.equal(nb.color, 'red');
+  await a.engine.syncNow();
+  assert.equal(a.store.all().length, 1);
+  assert.equal(a.store.get(x.id).body, 'v2 from B');
+  assert.equal(remoteNote(mock, x.id).body, 'v2 from B');
+  assert.equal(remoteNote(mock, x.id).pinned, true);
+});
+
+test('p: folder, order, reminder and free size round-trip to another device', async () => {
+  const mock = createMockGitHub();
+  const a = await makeDevice(mock);
+  const f = a.store.create({ type: 'folder', title: 'İş', color: 'purple', size: '2x2' });
+  const n = a.store.create({
+    title: 'Toplantı', body: 'gündem', folderId: f.id, order: 2048.5, size: '3x2',
+    remindAt: Date.UTC(2030, 0, 2, 9, 30), remindFired: false, remindRepeat: 'weekly',
+  });
+  await a.engine.syncNow();
+  const b = await makeDevice(mock);
+  const nb = b.store.get(n.id);
+  assert.equal(nb.folderId, f.id);
+  assert.equal(nb.order, 2048.5);
+  assert.equal(nb.size, '3x2');
+  assert.equal(nb.remindAt, Date.UTC(2030, 0, 2, 9, 30));
+  assert.equal(nb.remindRepeat, 'weekly');
+  assert.equal(b.store.get(f.id).type, 'folder');
+});
+
+test('q: the same layout field changed on both devices does not lose content or duplicate notes', async () => {
+  const mock = createMockGitHub();
+  const a = await makeDevice(mock);
+  const x = a.store.create({ title: 'X', body: 'v1', color: 'blue' });
+  await a.engine.syncNow();
+  const b = await makeDevice(mock);
+  a.store.edit(x.id, { color: 'green' });
+  b.store.edit(x.id, { color: 'orange' });
+  await a.engine.syncNow();
+  await b.engine.syncNow();
+  await a.engine.syncNow();
+  assert.equal(a.store.all().length, 1);
+  assert.equal(b.store.all().length, 1);
+  assert.equal(a.store.get(x.id).color, b.store.get(x.id).color, 'devices did not converge');
+  assert.equal(a.store.get(x.id).body, 'v1');
+});
+
+test('r: order-only changes do not touch updatedAt', async () => {
+  const mock = createMockGitHub();
+  const a = await makeDevice(mock);
+  const x = a.store.create({ title: 'X', body: 'v1' });
+  const t0 = a.store.get(x.id).updatedAt;
+  await new Promise((r) => setTimeout(r, 5));
+  a.store.edit(x.id, { order: 100 }, { touch: false });
+  assert.equal(a.store.get(x.id).updatedAt, t0);
+  assert.equal(a.store.get(x.id)._dirty, true);
+});

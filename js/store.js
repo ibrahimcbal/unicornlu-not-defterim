@@ -2,6 +2,19 @@
 // Tarayıcıya özel hiçbir şey import etmez; Node testlerinde MemoryBackend ile çalışır.
 
 export const SIZES = ['2x2', '2x3', '4x2', '4x3'];
+export const MAX_W = 12;
+export const MAX_H = 12;
+
+/** "3x2" -> {w:3,h:2} (sınırlara çekilir) ; geçersizse null. */
+export function parseSize(s) {
+  const m = /^(\d{1,2})x(\d{1,2})$/.exec(String(s || ''));
+  if (!m) return null;
+  const w = Math.min(MAX_W, Math.max(1, Number(m[1])));
+  const h = Math.min(MAX_H, Math.max(1, Number(m[2])));
+  return { w, h };
+}
+
+export const isFolder = (n) => !!n && n.type === 'folder';
 export const TRASH_DAYS = 30;
 
 let _idCounter = 0;
@@ -20,13 +33,18 @@ export function makeNote(partial = {}) {
   const now = Date.now();
   return {
     id: newId(),
-    type: 'text',            // 'text' | 'list'
+    type: 'text',            // 'text' | 'list' | 'folder'
     title: '',
     body: '',
     items: [],               // liste notları: [{id, t, d}]
     color: 'yellow',
-    size: 'auto',            // 'auto' | '2x2' | '2x3' | '4x2' | '4x3'
+    size: 'auto',            // 'auto' | 'GxY' (ör. 3x2)
     pinned: false,
+    folderId: null,          // bulunduğu klasörün kimliği (null = ana sayfa)
+    order: null,             // elle sıralama değeri (küçük = önce)
+    remindAt: null,          // hatırlatıcı zamanı (ms)
+    remindFired: false,      // hatırlatıcı çaldı mı
+    remindRepeat: 'none',    // 'none' | 'daily' | 'weekly' | 'monthly'
     createdAt: now,
     updatedAt: now,
     trashedAt: null,
@@ -51,6 +69,11 @@ export function toRemote(n) {
     color: n.color,
     size: n.size,
     pinned: !!n.pinned,
+    folderId: n.folderId || null,
+    order: typeof n.order === 'number' ? n.order : null,
+    remindAt: typeof n.remindAt === 'number' ? n.remindAt : null,
+    remindFired: !!n.remindFired,
+    remindRepeat: n.remindRepeat || 'none',
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
     trashedAt: n.trashedAt ?? null,
@@ -60,14 +83,15 @@ export function toRemote(n) {
 /** Uzaktan gelen JSON'u güvenli bir nota çevirir. Geçersizse null. */
 export function fromRemote(raw, id) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.deleted === true) return null;
-  const type = raw.type === 'list' ? 'list' : 'text';
+  const type = raw.type === 'list' ? 'list' : raw.type === 'folder' ? 'folder' : 'text';
   const items = Array.isArray(raw.items)
     ? raw.items
         .slice(0, 2000)
         .filter((i) => i && typeof i === 'object')
         .map((i) => ({ id: String(i.id || newItemId()).slice(0, 40), t: String(i.t ?? '').slice(0, 2000), d: !!i.d }))
     : [];
-  const size = raw.size === 'auto' || SIZES.includes(raw.size) ? raw.size : 'auto';
+  const ps = parseSize(raw.size);
+  const size = ps ? ps.w + 'x' + ps.h : 'auto';
   const num = (v, d) => (typeof v === 'number' && isFinite(v) && Math.abs(v) <= 8.64e15 ? v : d);
   return {
     id,
@@ -78,22 +102,61 @@ export function fromRemote(raw, id) {
     color: String(raw.color || 'yellow'),
     size,
     pinned: !!raw.pinned,
+    folderId: typeof raw.folderId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(raw.folderId) && raw.folderId !== id ? raw.folderId : null,
+    order: raw.order == null ? null : num(raw.order, null),
+    remindAt: raw.remindAt == null ? null : num(raw.remindAt, null),
+    remindFired: !!raw.remindFired,
+    remindRepeat: ['daily', 'weekly', 'monthly'].includes(raw.remindRepeat) ? raw.remindRepeat : 'none',
     createdAt: num(raw.createdAt, Date.now()),
     updatedAt: num(raw.updatedAt, Date.now()),
     trashedAt: raw.trashedAt == null ? null : num(raw.trashedAt, Date.now()),
   };
 }
 
+/** Yalnızca içerik: iki sürüm bunda ayrışıyorsa gerçek çakışmadır. */
 export function sameContent(a, b) {
   return (
     a.type === b.type &&
     a.title === b.title &&
     a.body === b.body &&
+    (a.trashedAt ?? null) === (b.trashedAt ?? null) &&
+    JSON.stringify(a.items || []) === JSON.stringify(b.items || [])
+  );
+}
+
+export const CONTENT_KEYS = ['type', 'title', 'body', 'items', 'trashedAt'];
+export const LAYOUT_KEYS = ['color', 'size', 'pinned', 'folderId', 'order', 'remindAt', 'remindFired', 'remindRepeat'];
+
+/** Son eşitlenen uzak durumun anlık görüntüsü (üç yönlü birleştirme için). */
+export function snapshot(n) {
+  return {
+    type: n.type,
+    title: n.title,
+    body: n.body,
+    items: (n.items || []).map((i) => ({ ...i })),
+    trashedAt: n.trashedAt ?? null,
+    color: n.color,
+    size: n.size,
+    pinned: !!n.pinned,
+    folderId: n.folderId || null,
+    order: n.order ?? null,
+    remindAt: n.remindAt ?? null,
+    remindFired: !!n.remindFired,
+    remindRepeat: n.remindRepeat || 'none',
+  };
+}
+
+/** Düzen alanları: renk, boyut, sabitleme, klasör, sıra, hatırlatıcı. */
+export function sameLayout(a, b) {
+  return (
     a.color === b.color &&
     a.size === b.size &&
     !!a.pinned === !!b.pinned &&
-    (a.trashedAt ?? null) === (b.trashedAt ?? null) &&
-    JSON.stringify(a.items || []) === JSON.stringify(b.items || [])
+    (a.folderId || null) === (b.folderId || null) &&
+    (a.order ?? null) === (b.order ?? null) &&
+    (a.remindAt ?? null) === (b.remindAt ?? null) &&
+    !!a.remindFired === !!b.remindFired &&
+    (a.remindRepeat || 'none') === (b.remindRepeat || 'none')
   );
 }
 
@@ -336,11 +399,11 @@ export class Store {
   }
 
   /** Kullanıcı düzenlemesi: alanları uygular, işaretler. Not yoksa oluşturmaz. */
-  edit(id, patch) {
+  edit(id, patch, { touch = true } = {}) {
     return this.mutate(id, (n) => {
       if (!n) return undefined;
       const p = typeof patch === 'function' ? patch(n) : patch;
-      return { ...n, ...p, updatedAt: Date.now(), _dirty: true, _rev: (n._rev || 0) + 1 };
+      return { ...n, ...p, updatedAt: touch ? Date.now() : n.updatedAt, _dirty: true, _rev: (n._rev || 0) + 1 };
     });
   }
 

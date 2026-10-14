@@ -53,6 +53,13 @@ const PATHS = {
   upload: '<path d="M12 16V5M7 9l5-5 5 5M5 20h14"/>',
   copy: '<path d="M9 9h10v10H9zM5 15V5h10"/>',
   link: '<path d="M10 14a4 4 0 005.6 0l3-3a4 4 0 00-5.6-5.6l-1 1M14 10a4 4 0 00-5.6 0l-3 3a4 4 0 005.6 5.6l1-1"/>',
+  folder: '<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>',
+  bell: '<path d="M6 9a6 6 0 0112 0c0 5 2 6 2 7H4c0-1 2-2 2-7zM10 19a2 2 0 004 0"/>',
+  move: '<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>',
+  resize: '<path d="M15 21h6v-6M21 21l-8-8"/>',
+  calendar: '<path d="M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"/>',
+  home: '<path d="M4 11l8-7 8 7M6 10v10h12V10"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/>',
   moon: '<path d="M20 14.5A8 8 0 019.500 4 8 8 0 1020 14.500z"/>',
 };
 

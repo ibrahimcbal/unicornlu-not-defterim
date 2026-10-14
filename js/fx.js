@@ -37,6 +37,29 @@ export function snap(strength = 1) {
   } catch {}
 }
 
+/** Hatırlatıcı zili: iki notalı kısa çan. Ses kapalıysa çalmaz. */
+export function chime() {
+  if (!soundOn) return;
+  const ac = audio();
+  if (!ac) return;
+  try {
+    if (ac.state === 'suspended') ac.resume();
+    [[880, 0], [1320, 0.16]].forEach(([f, d]) => {
+      const t = ac.currentTime + d;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.2, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+      osc.connect(gain).connect(ac.destination);
+      osc.start(t);
+      osc.stop(t + 0.55);
+    });
+  } catch {}
+}
+
 export function buzz(ms = 8) {
   try { if (navigator.vibrate) navigator.vibrate(ms); } catch {}
 }

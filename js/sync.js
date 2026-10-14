@@ -3,7 +3,7 @@
 // iki cihaz aynı notu aynı anda değiştirirse ikisi de saklanır ("çakışma kopyası").
 // Tarayıcıya özel API'ler yalnızca start() içinde kullanılır; Node testlerinde çalışır.
 
-import { makeNote, newId, toRemote, fromRemote, sameContent } from './store.js';
+import { makeNote, newId, toRemote, fromRemote, sameContent, sameLayout, snapshot, LAYOUT_KEYS } from './store.js';
 
 const NOTE_RE = /^notes\/([A-Za-z0-9_-]+)\.json$/;
 const RECENT_MS = 90_000;      // yeni yazılan notun "uzakta yok" sanılmasını önler
@@ -362,11 +362,39 @@ export class SyncEngine {
     this.store.mutate(
       id,
       (cur) => {
-        if (!cur) return { ...makeNote(), ...incoming, _sha: sha, _dirty: false, _rev: 0, _purge: false, _syncedAt: t };
+        const snap = snapshot(incoming);
+        if (!cur) return { ...makeNote(), ...incoming, _sha: sha, _dirty: false, _rev: 0, _purge: false, _syncedAt: t, _base: snap };
         if (cur._purge) return { ...cur, _sha: sha };
-        if (!cur._dirty) return { ...cur, ...incoming, _sha: sha, _dirty: false, _syncedAt: t };
-        if (sameContent(cur, incoming)) {
-          return { ...cur, _sha: sha, _dirty: false, _syncedAt: t, updatedAt: Math.max(cur.updatedAt, incoming.updatedAt) };
+        if (!cur._dirty) return { ...cur, ...incoming, _sha: sha, _dirty: false, _syncedAt: t, _base: snap };
+
+        // Bu cihazda gönderilmemiş değişiklik var: üç yönlü birleştir (temel = son eşitlenen sürüm).
+        const base = cur._base;
+        const localContentChanged = !base || !sameContent(cur, base);
+        const remoteContentChanged = !base || !sameContent(incoming, base);
+        const mergeLayout = () => {
+          const out = {};
+          for (const k of LAYOUT_KEYS) {
+            const localChanged = base ? JSON.stringify(cur[k] ?? null) !== JSON.stringify(base[k] ?? null) : true;
+            out[k] = localChanged ? cur[k] : incoming[k];
+          }
+          return out;
+        };
+        const finish = (content, updatedAt) => {
+          const merged = { ...cur, ...content, ...mergeLayout(), updatedAt, _sha: sha, _base: snap, _syncedAt: t };
+          // Uzaktakiyle birebir aynıysa temiz, değilse bu cihazdaki fark gönderilecek.
+          merged._dirty = !(sameContent(merged, incoming) && sameLayout(merged, incoming));
+          return merged;
+        };
+        if (sameContent(cur, incoming) || (base && !remoteContentChanged)) {
+          // İçerik uzakta değişmemiş (ya da aynı): yerel içerik kalır, düzen alan alan birleşir.
+          const same = sameContent(cur, incoming);
+          return finish({}, same ? Math.max(cur.updatedAt || 0, incoming.updatedAt || 0) : cur.updatedAt || 0);
+        }
+        if (base && !localContentChanged) {
+          // İçerik yalnızca uzakta değişmiş: uzak içeriği al, yerel düzen değişiklikleri korunur.
+          const content = {};
+          for (const k of ['type', 'title', 'body', 'items', 'trashedAt']) content[k] = incoming[k];
+          return finish(content, Math.max(cur.updatedAt || 0, incoming.updatedAt || 0));
         }
         // Gerçek çakışma: yeni olan asıl not kalır, diğeri kopya olarak saklanır.
         if ((cur.updatedAt || 0) >= (incoming.updatedAt || 0)) {
@@ -374,7 +402,7 @@ export class SyncEngine {
           return { ...cur, _sha: sha };
         }
         copy = this._conflictCopy(cur);
-        return { ...cur, ...incoming, _sha: sha, _dirty: false, _syncedAt: t };
+        return { ...cur, ...incoming, _sha: sha, _dirty: false, _syncedAt: t, _base: snap };
       },
       { origin: 'sync' },
     );
@@ -391,6 +419,11 @@ export class SyncEngine {
       color: src.color,
       size: src.size,
       pinned: false,
+      folderId: src.folderId || null,
+      order: null,
+      remindAt: null,
+      remindFired: false,
+      remindRepeat: 'none',
       createdAt: t,
       updatedAt: t,
       trashedAt: src.trashedAt ?? null,
@@ -476,7 +509,7 @@ export class SyncEngine {
       id,
       (cur) => {
         if (!cur) return undefined;
-        const next = { ...cur, _sha: sha || cur._sha, _syncedAt: t };
+        const next = { ...cur, _sha: sha || cur._sha, _syncedAt: t, _base: snapshot(n) };
         if (cur._rev === rev) next._dirty = false;
         return next;
       },

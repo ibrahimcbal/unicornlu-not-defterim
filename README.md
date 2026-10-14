@@ -2,10 +2,14 @@
 
 Lego tuğlalarından oluşan kişisel not defteri. iPhone, Windows ve Mac'te çalışır, notların tüm cihazlarında eşitlenir.
 
-- **Tuğla notlar:** her not bir Lego tuğlası; taban plakasına oturur. Renk, boyut, sabitleme.
-- **Liste notları:** işaretlenebilir maddeler, hepsi bitince konfeti.
+- **Tuğla notlar:** her not bir Lego tuğlası; taban plakasına oturur. Renk, sabitleme, serbest boyut.
+- **Liste notları:** işaretlenebilir maddeler, hepsi bitince konfeti. Çok satırlı metni yapıştırınca her satır ayrı madde olur.
+- **Klasörler:** klasör bir tuğladır; içine girilir, iç içe klasör olur. Notu klasöre sürükleyip bırak ya da editördeki klasör düğmesiyle taşı.
+- **Sürükle-bırak:** bilgisayarda tuğlayı tutup çek. Telefonda tuğlaya uzun bas (ya da "Düzenle" düğmesi) → ✥ ile sürükle, köşedeki ⤡ ile boyutlandır.
+- **Hatırlatıcı:** nota tarih/saat ver (tekrarlı olabilir). Uygulama açıkken uyarı + bildirim gelir; "Takvime ekle" ile telefonun takvimi uygulama kapalıyken de çaldırır.
+- **Bağlantılar:** metindeki adresler tıklanabilir çip olarak görünür. Yapıştırma düz metin olarak gelir.
 - **Çevrimdışı çalışır:** internet yokken de yazarsın; bağlantı gelince otomatik eşitlenir.
-- **Hiçbir not sessizce ezilmez:** iki cihaz aynı notu aynı anda değiştirirse ikisi de saklanır ("çakışma kopyası").
+- **Hiçbir not sessizce ezilmez:** iki cihaz aynı notu aynı anda değiştirirse ikisi de saklanır ("çakışma kopyası"); düzen değişiklikleri (renk, sıra, klasör) içerikle çakışmaz, birleşir.
 - **Çöp kutusu:** silinen notlar 30 gün bekler. Geçmişin tamamı GitHub'da commit olarak durur.
 
 ## Nasıl çalışır?
@@ -63,8 +67,10 @@ Uygulama dosyaları herkese açık bir sitede durmalıdır, notların ise **öze
 |---|---|
 | `n` | Yeni not |
 | `l` | Yeni liste |
+| `k` | Yeni klasör |
 | `/` | Ara |
-| `Esc` | Kapat |
+| `Esc` | Kapat / düzenleme modundan çık |
+| `Alt + ok tuşları` | Odaktaki tuğlayı klavyeyle taşı (düzenleme modunda) |
 | `Ctrl/Cmd + Enter` | Notu kapat |
 
 ## Geliştirme
@@ -83,6 +89,8 @@ js/store.js         yerel depo (IndexedDB) + not modeli
 js/sync.js          GitHub eşitleme motoru
 js/app.js           arayüz
 js/palette.js       tuğla renkleri
+js/arrange.js       sürükle-bırak, boyutlandırma
+js/remind.js        hatırlatıcı, takvim (.ics), bağlantı bulma
 js/fx.js            animasyon / ses / konfeti
 sw.js               çevrimdışı önbellek
 tests/              eşitleme testleri + sahte GitHub

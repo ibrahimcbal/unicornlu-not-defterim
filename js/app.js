@@ -1,11 +1,13 @@
 // Not Defterim — arayüz. Veri: store.js, eşitleme: sync.js.
-import { Store, openBestBackend, SIZES, noteSearchText, fold, newItemId, sameContent, fromRemote } from './store.js';
+import { Store, openBestBackend, SIZES, noteSearchText, fold, newItemId, sameContent, fromRemote, parseSize, isFolder } from './store.js';
 import { SyncEngine, encodeSetup, decodeSetup, cleanRepo } from './sync.js';
 import { COLORS, PLATES, colorKey, injectPaletteCss } from './palette.js';
 import { h, icon, clear, fillIcons } from './dom.js';
 import * as fx from './fx.js';
+import { initArrange } from './arrange.js';
+import { toLocalInput, fromLocalInput, presets, nextOccurrence, dueReminders, buildIcs, findLinks, splitPastedLines } from './remind.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const DEFAULT_REPO = 'ibrahimcbal/unicornlu-notlar';
 const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new';
 
@@ -14,7 +16,10 @@ const els = {};
 let store;
 let sync;
 let prefs = { scheme: 'auto', plate: 'gray', sound: false, sort: 'updated', textSize: 'm', font: 'round', shortcuts: true };
-const ui = { filter: 'all', query: '', cols: 4, cell: 90, cards: new Map(), firstRender: true, quiet: new Set(), renderQueued: false, sheetKind: null };
+const ui = {
+  filter: 'all', query: '', folder: null, arranging: false, dragging: false, pendingRender: false,
+  cols: 4, cell: 90, cards: new Map(), firstRender: true, quiet: new Set(), renderQueued: false, sheetKind: null,
+};
 const ed = { id: null, fresh: false, patch: null, timer: 0, items: [], pop: null, closing: false };
 let sheetOpen = false;
 let installEvent = null;
@@ -59,8 +64,9 @@ function autoSize(n) {
 }
 
 function brickDims(n) {
-  const s = SIZES.includes(n.size) ? n.size : autoSize(n);
-  const [w, hh] = s.split('x').map(Number);
+  const p = parseSize(n.size);
+  if (p) return { w: Math.min(p.w, ui.cols), h: p.h };
+  const [w, hh] = (isFolder(n) ? '2x2' : autoSize(n)).split('x').map(Number);
   return { w: Math.min(w, ui.cols), h: hh };
 }
 
@@ -158,6 +164,13 @@ function toast(msg, { action, ms = 4500 } = {}) {
 
 function buildChips() {
   clear(els.chips);
+  els.chips.append(
+    h('button', {
+      type: 'button', class: 'chip arrange-chip', id: 'arrangeChip', 'aria-pressed': String(ui.arranging),
+      'aria-label': 'Düzenleme modu: sürükle, sırala, boyutlandır', title: 'Düzenle',
+      onclick: () => setArranging(!ui.arranging),
+    }, icon('move', 18), 'Düzenle'),
+  );
   const mk = (key, content, cls, label) =>
     h('button', {
       type: 'button',
@@ -175,17 +188,43 @@ function buildChips() {
 
 function setFilter(f) {
   ui.filter = f;
-  for (const b of els.chips.children) b.setAttribute('aria-pressed', String(b.dataset.f === f));
+  for (const b of els.chips.children) if (b.dataset.f !== undefined) b.setAttribute('aria-pressed', String(b.dataset.f === f));
+  if (f === 'trash' && ui.arranging) setArranging(false);
   render();
   window.scrollTo({ top: 0 });
 }
 
+function validFolderIds() {
+  const s = new Set();
+  for (const n of store.all()) if (isFolder(n) && !n.trashedAt && !n._purge) s.add(n.id);
+  return s;
+}
+
+/** Notun fiilen bulunduğu klasör (klasör silinmiş/çöpteyse ana sayfa). */
+function effFolder(n, valid) {
+  return n.folderId && n.folderId !== n.id && valid.has(n.folderId) ? n.folderId : null;
+}
+
+function childCounts() {
+  const valid = validFolderIds();
+  const m = new Map();
+  for (const n of store.all()) {
+    if (n._purge || n.trashedAt) continue;
+    const f = effFolder(n, valid);
+    if (f) m.set(f, (m.get(f) || 0) + 1);
+  }
+  return m;
+}
+
 function visibleNotes() {
   const q = fold(ui.query.trim());
+  const valid = validFolderIds();
+  if (ui.folder && !valid.has(ui.folder)) ui.folder = null;
   let list = store.all().filter((n) => !n._purge);
   if (ui.filter === 'trash') list = list.filter((n) => n.trashedAt);
   else {
     list = list.filter((n) => !n.trashedAt);
+    if (!q) list = list.filter((n) => effFolder(n, valid) === (ui.folder || null));
     if (ui.filter !== 'all') list = list.filter((n) => colorKey(n.color) === ui.filter);
   }
   if (q) {
@@ -195,17 +234,21 @@ function visibleNotes() {
       return words.every((w) => t.includes(w));
     });
   }
+  const byUpdated = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0);
   if (ui.filter === 'trash') list.sort((a, b) => (b.trashedAt || 0) - (a.trashedAt || 0));
-  else {
+  else if (prefs.sort === 'manual') {
+    // Elle sıralama: sırası olmayan (yeni) notlar en başa, en yenisi önce.
+    const key = (n) => (typeof n.order === 'number' ? n.order : -(n.updatedAt || 0) / 1000);
+    list.sort((a, b) => key(a) - key(b) || byUpdated(a, b));
+  } else {
     const colorIdx = (n) => COLORS.findIndex((c) => c.key === colorKey(n.color));
-    const byUpdated = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0);
     const cmp = {
       updated: byUpdated,
       created: (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
-      title: (a, b) => (a.title.trim() || '\uffff').localeCompare(b.title.trim() || '\uffff', 'tr') || byUpdated(a, b),
+      title: (a, b) => (a.title.trim() || '￿').localeCompare(b.title.trim() || '￿', 'tr') || byUpdated(a, b),
       color: (a, b) => colorIdx(a) - colorIdx(b) || byUpdated(a, b),
     }[prefs.sort] || byUpdated;
-    list.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || cmp(a, b));
+    list.sort((a, b) => (Number(isFolder(b)) - Number(isFolder(a))) || (Number(b.pinned) - Number(a.pinned)) || cmp(a, b));
   }
   return list;
 }
@@ -226,11 +269,11 @@ function layoutGrid() {
   return changed;
 }
 
-function cardSig(n, d) {
+function cardSig(n, d, extra) {
   return JSON.stringify([
     n.title, n.body.slice(0, 500), n.type,
     (n.items || []).slice(0, 12).map((i) => [i.t.slice(0, 80), i.d]), (n.items || []).length,
-    colorKey(n.color), n.pinned, d.w, d.h, ui.filter === 'trash',
+    colorKey(n.color), n.pinned, d.w, d.h, ui.filter === 'trash', n.remindAt, n.remindFired, extra,
   ]);
 }
 
@@ -240,31 +283,53 @@ function studsEl(w) {
   return s;
 }
 
-function fillCard(el, n, d) {
+const shortWhenFmt = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+function shortWhen(ms) {
+  const d = new Date(ms);
+  return d.toDateString() === new Date().toDateString() ? tfmt.format(d) : shortWhenFmt.format(d);
+}
+const fullWhenFmt = new Intl.DateTimeFormat('tr-TR', { weekday: 'short', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+const fmtFull = (ms) => fullWhenFmt.format(new Date(ms));
+
+function fillCard(el, n, d, count) {
   for (const c of [...el.classList]) if (c.startsWith('c-')) el.classList.remove(c);
   el.classList.add('c-' + colorKey(n.color));
+  const folder = isFolder(n);
+  el.classList.toggle('folder', folder);
   el.style.setProperty('--w', d.w);
   el.style.setProperty('--h', d.h);
   clear(el);
   const inTrash = ui.filter === 'trash';
   const body = h('div', { class: 'bb' });
   const title = n.title.trim();
-  if (title) body.append(h('h3', null, title));
-  if (n.type === 'list') {
-    const items = n.items || [];
-    if (items.length) {
-      const ul = h('ul', { class: 'chk' });
-      for (const it of items.slice(0, 9)) ul.append(h('li', { class: it.d ? 'd' : '' }, h('i', { class: 'cb' }), h('span', null, it.t || '…')));
-      if (items.length > 9) ul.append(h('li', { class: 'more' }, `+${items.length - 9} madde daha`));
-      body.append(ul);
-    } else if (!title) body.append(h('p', { class: 'none' }, 'Boş liste'));
-  } else if (n.body.trim()) {
-    body.append(h('p', null, n.body.slice(0, 500)));
-  } else if (!title) {
-    body.append(h('p', { class: 'none' }, 'Boş not'));
+  if (folder) {
+    body.append(
+      h('div', { class: 'folder-ico' }, icon('folder', 34)),
+      h('h3', null, title || 'Adsız klasör'),
+      h('p', { class: 'folder-count' }, count ? count + ' öğe' : 'Boş'),
+    );
+  } else {
+    if (title) body.append(h('h3', null, title));
+    if (n.type === 'list') {
+      const items = n.items || [];
+      if (items.length) {
+        const ul = h('ul', { class: 'chk' });
+        for (const it of items.slice(0, 9)) ul.append(h('li', { class: it.d ? 'd' : '' }, h('i', { class: 'cb' }), h('span', null, it.t || '…')));
+        if (items.length > 9) ul.append(h('li', { class: 'more' }, `+${items.length - 9} madde daha`));
+        body.append(ul);
+      } else if (!title) body.append(h('p', { class: 'none' }, 'Boş liste'));
+    } else if (n.body.trim()) {
+      body.append(h('p', null, n.body.slice(0, 500)));
+    } else if (!title) {
+      body.append(h('p', { class: 'none' }, 'Boş not'));
+    }
   }
   el.append(studsEl(d.w), body);
-  if (n.pinned && !inTrash) el.append(h('span', { class: 'pinned-badge' }, icon('pin', 18)));
+  if (n.pinned && !inTrash && !folder) el.append(h('span', { class: 'pinned-badge' }, icon('pin', 18)));
+  if (n.remindAt && !inTrash && !folder) {
+    const due = !n.remindFired && n.remindAt <= Date.now();
+    el.append(h('span', { class: 'remind-badge' + (due ? ' due' : '') + (n.remindFired ? ' fired' : '') }, icon('bell', 13), shortWhen(n.remindAt)));
+  }
   const quick = h('div', { class: 'quick' + (inTrash ? ' show' : '') });
   if (inTrash) {
     quick.append(
@@ -272,25 +337,65 @@ function fillCard(el, n, d) {
       h('button', { type: 'button', onclick: (e) => { e.stopPropagation(); purgeWithConfirm(n.id); } }, icon('x', 17), 'Sil'),
     );
   } else {
-    quick.append(
-      h('button', { type: 'button', 'aria-label': n.pinned ? 'Sabitlemeyi kaldır' : 'Sabitle', onclick: (e) => { e.stopPropagation(); store.edit(n.id, { pinned: !n.pinned }); fx.snap(0.7); } }, icon('pin', 17)),
-      h('button', { type: 'button', 'aria-label': 'Çöpe at', onclick: (e) => { e.stopPropagation(); trashCard(n.id); } }, icon('trash', 17)),
-    );
+    if (folder) {
+      quick.append(h('button', { type: 'button', 'aria-label': 'Klasörü düzenle', onclick: (e) => { e.stopPropagation(); openEditor(n.id); } }, icon('edit', 17)));
+    } else {
+      quick.append(h('button', { type: 'button', 'aria-label': n.pinned ? 'Sabitlemeyi kaldır' : 'Sabitle', onclick: (e) => { e.stopPropagation(); store.edit(n.id, { pinned: !n.pinned }); fx.snap(0.7); } }, icon('pin', 17)));
+    }
+    quick.append(h('button', { type: 'button', 'aria-label': 'Çöpe at', onclick: (e) => { e.stopPropagation(); trashCard(n.id); } }, icon('trash', 17)));
   }
   el.append(quick);
-  el.setAttribute('aria-label', (title || 'Adsız not') + (n.type === 'list' ? ', liste' : '') + (inTrash ? '' : '. Düzenlemek için Enter'));
+  if (!inTrash) {
+    el.append(
+      h('button', { type: 'button', class: 'h-move', tabindex: '-1', 'aria-label': 'Taşı (sürükle)' }, icon('move', 18)),
+      h('span', { class: 'h-size', 'aria-hidden': 'true' }, icon('resize', 18)),
+    );
+  }
+  el.setAttribute('aria-label', (title || (folder ? 'Adsız klasör' : 'Adsız not')) + (folder ? ', klasör' : n.type === 'list' ? ', liste' : '') + (inTrash ? '' : folder ? '. Açmak için Enter' : '. Düzenlemek için Enter'));
+}
+
+function setBrickDims(el, w, hh) {
+  el.style.setProperty('--w', w);
+  el.style.setProperty('--h', hh);
+  const s = el.querySelector('.studs');
+  if (s) {
+    while (s.children.length < w) s.append(h('i'));
+    while (s.children.length > w) s.lastChild.remove();
+  }
+}
+function getBrickDims(el) {
+  return { w: Number(el.style.getPropertyValue('--w')) || 2, h: Number(el.style.getPropertyValue('--h')) || 2 };
+}
+
+function openCard(id) {
+  const n = store.get(id);
+  if (!n) return;
+  if (isFolder(n) && !ui.arranging) openFolder(id);
+  else openEditor(id);
 }
 
 function makeCard(id) {
   const el = h('article', { class: 'brick', tabindex: '0', dataset: { id } });
-  el.addEventListener('click', () => {
+  el.addEventListener('click', (e) => {
+    if (arrange && arrange.justActed()) return;
     if (ui.filter === 'trash') return;
-    openEditor(id);
+    if (e.target.closest && e.target.closest('.h-move, .h-size')) return;
+    openCard(id);
   });
   el.addEventListener('keydown', (e) => {
-    if ((e.key === 'Enter' || e.key === ' ') && e.target === el) {
+    if (e.target !== el) return;
+    if ((e.key === 'Enter' || e.key === ' ') && ui.filter !== 'trash') {
       e.preventDefault();
-      if (ui.filter !== 'trash') openEditor(id);
+      openCard(id);
+    } else if (e.altKey && ['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(e.key) && ui.filter !== 'trash' && !ui.query.trim()) {
+      // Klavyeyle taşı: Alt + ok tuşları
+      e.preventDefault();
+      const back = e.key === 'ArrowLeft' || e.key === 'ArrowUp';
+      const sib = back ? el.previousElementSibling : el.nextElementSibling;
+      if (!sib) return;
+      if (back) sib.before(el); else sib.after(el);
+      commitReorder(id, el.previousElementSibling && el.previousElementSibling.dataset.id, el.nextElementSibling && el.nextElementSibling.dataset.id);
+      el.focus({ preventScroll: true });
     }
   });
   return el;
@@ -298,7 +403,9 @@ function makeCard(id) {
 
 function render() {
   ui.renderQueued = false;
+  if (ui.dragging) { ui.pendingRender = true; return; }
   const list = visibleNotes();
+  const counts = childCounts();
   const first = new Map();
   if (fx.motionOK() && ui.cards.size && ui.cards.size < 160) {
     for (const el of ui.cards.values()) if (el.isConnected) first.set(el, el.getBoundingClientRect());
@@ -312,8 +419,9 @@ function render() {
     let el = ui.cards.get(n.id);
     let isNew = false;
     if (!el) { el = makeCard(n.id); ui.cards.set(n.id, el); isNew = true; }
-    const sig = cardSig(n, d);
-    if (el._sig !== sig) { fillCard(el, n, d); el._sig = sig; }
+    const cnt = isFolder(n) ? counts.get(n.id) || 0 : 0;
+    const sig = cardSig(n, d, cnt);
+    if (el._sig !== sig) { fillCard(el, n, d, cnt); el._sig = sig; }
     const expected = prev ? prev.nextElementSibling : els.grid.firstElementChild;
     if (el !== expected) els.grid.insertBefore(el, expected);
     prev = el;
@@ -329,6 +437,7 @@ function render() {
   ui.quiet.clear();
   ui.firstRender = false;
   fx.flip(first);
+  renderCrumbs();
 
   // boş durum
   const total = store.all().filter((n) => !n._purge && !n.trashedAt).length;
@@ -336,9 +445,42 @@ function render() {
   if (!els.empty.hidden) {
     if (ui.filter === 'trash') { els.emptyTitle.textContent = 'Çöp kutusu boş'; els.emptyText.textContent = 'Sildiğin notlar 30 gün burada bekler.'; }
     else if (ui.query.trim()) { els.emptyTitle.textContent = 'Eşleşen tuğla yok'; els.emptyText.textContent = 'Başka bir sözcükle aramayı dene.'; }
+    else if (ui.folder) { els.emptyTitle.textContent = 'Bu klasör boş'; els.emptyText.textContent = 'Yeni not ekle ya da tuğlaları buraya sürükle.'; }
     else if (total && ui.filter !== 'all') { els.emptyTitle.textContent = 'Bu renkte not yok'; els.emptyText.textContent = 'Başka bir renk seç ya da yeni bir tuğla ekle.'; }
     else { els.emptyTitle.textContent = 'Taban plakası boş'; els.emptyText.textContent = 'İlk tuğlanı eklemek için sağ alttaki + düğmesine bas.'; }
   }
+}
+
+function renderCrumbs() {
+  const el = els.crumbs;
+  if (!ui.folder || ui.filter === 'trash') { el.hidden = true; return; }
+  const path = [];
+  let cur = store.get(ui.folder);
+  let guard = 0;
+  while (cur && guard++ < 24) {
+    path.unshift(cur);
+    cur = cur.folderId ? store.get(cur.folderId) : null;
+  }
+  clear(el);
+  el.append(h('button', { class: 'crumb', type: 'button', 'data-drop': '', onclick: () => openFolder(null) }, icon('home', 16), 'Ana sayfa'));
+  path.forEach((f, i) => {
+    el.append(
+      h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '›'),
+      h('button', {
+        class: 'crumb', type: 'button', 'data-drop': f.id, 'aria-current': i === path.length - 1 ? 'page' : null,
+        onclick: () => openFolder(f.id),
+      }, f.title.trim() || 'Adsız klasör'),
+    );
+  });
+  el.hidden = false;
+}
+
+function openFolder(id) {
+  ui.folder = id || null;
+  ui.query = '';
+  els.q.value = '';
+  els.qClear.hidden = true;
+  setFilter('all');
 }
 
 function scheduleRender() {
@@ -348,6 +490,9 @@ function scheduleRender() {
 }
 
 async function trashCard(id) {
+  const n = store.get(id);
+  if (!n) return;
+  if (isFolder(n)) { trashFolder(id); return; }
   const el = ui.cards.get(id);
   if (el) { el.classList.add('leaving'); await fx.crumble(el); }
   store.trash(id);
@@ -355,25 +500,67 @@ async function trashCard(id) {
   toast('Çöpe taşındı', { action: { label: 'Geri al', fn: () => store.restore(id) } });
 }
 
+/** Klasörü çöpe atar; içindekiler bir üst klasöre taşınır. Onaylanmazsa false. */
+function trashFolder(id) {
+  const f = store.get(id);
+  if (!f) return false;
+  const kids = store.all().filter((k) => k.folderId === id && !k._purge && !k.trashedAt);
+  const msg = kids.length
+    ? `"${f.title.trim() || 'Klasör'}" klasörü çöpe taşınacak. İçindeki ${kids.length} öğe bir üst klasöre taşınır. Devam edilsin mi?`
+    : `"${f.title.trim() || 'Klasör'}" klasörü çöpe taşınacak. Devam edilsin mi?`;
+  if (!window.confirm(msg)) return false;
+  for (const k of kids) store.edit(k.id, { folderId: f.folderId || null }, { touch: false });
+  store.trash(id);
+  fx.snap(0.7);
+  toast('Klasör çöpe taşındı', { action: { label: 'Geri al', fn: () => store.restore(id) } });
+  return true;
+}
+
 function purgeWithConfirm(id) {
   if (!window.confirm('Bu not kalıcı olarak silinecek. (Depo geçmişindeki eski sürümleri GitHub\'da kalabilir.) Emin misin?')) return;
   store.purge(id);
 }
 
-// ------------------------------------------------------------------ yeni not
+// ------------------------------------------------------------------ yeni not / klasör
+
+/** Elle sıralama açıkken yeni öğe en başa gelsin. */
+function topOrder() {
+  if (prefs.sort !== 'manual') return null;
+  let min = 0;
+  for (const n of store.all()) if (typeof n.order === 'number' && n.order < min) min = n.order;
+  return min - 1024;
+}
 
 function createNote(type) {
   if (ed.id) return;
+  if (ui.arranging) setArranging(false);
   const lastColor = store.getMeta('lastColor', 'yellow');
   const n = store.create({
     type,
     color: colorKey(lastColor),
+    folderId: ui.folder || null,
+    order: topOrder(),
     items: type === 'list' ? [{ id: newItemId(), t: '', d: false }] : [],
   });
   ui.quiet.add(n.id);
   render();
-  const rect = (type === 'list' ? els.fabList : els.fabNew).getBoundingClientRect();
-  openEditor(n.id, { fromRect: rect, fresh: true });
+  const btn = type === 'list' ? els.fabList : els.fabNew;
+  openEditor(n.id, { fromRect: btn.getBoundingClientRect(), fresh: true });
+}
+
+function createFolder() {
+  if (ed.id) return;
+  if (ui.arranging) setArranging(false);
+  const n = store.create({
+    type: 'folder',
+    color: colorKey(store.getMeta('lastColor', 'yellow')),
+    size: '2x2',
+    folderId: ui.folder || null,
+    order: topOrder(),
+  });
+  ui.quiet.add(n.id);
+  render();
+  openEditor(n.id, { fromRect: els.fabFolder.getBoundingClientRect(), fresh: true });
 }
 
 // ------------------------------------------------------------------ editör
@@ -443,27 +630,56 @@ function updateEdInfo() {
 function fillEditor(n) {
   buildEdStuds();
   els.ed.className = 'ed c-' + colorKey(n.color);
+  const folder = isFolder(n);
   els.edTitle.value = n.title;
+  els.edTitle.placeholder = folder ? 'Klasör adı' : 'Başlık';
   els.edPin.setAttribute('aria-pressed', String(!!n.pinned));
+  els.edPin.hidden = folder;
+  els.edType.hidden = folder;
+  els.edRemind.hidden = folder;
+  els.edCopy.hidden = folder;
+  updateRemindBtn(n);
   ed.items = (n.items || []).map((i) => ({ ...i }));
   setTypeUi(n);
   updateEdInfo();
 }
 
+function updateRemindBtn(n = store.get(ed.id)) {
+  if (!n) return;
+  const active = !!n.remindAt && !n.remindFired;
+  els.edRemind.classList.toggle('has-remind', active);
+  els.edRemind.setAttribute('aria-label', n.remindAt ? 'Hatırlatıcı: ' + fmtFull(n.remindAt) : 'Hatırlatıcı kur');
+}
+
 function setTypeUi(n) {
   const isList = n.type === 'list';
-  els.edBody.hidden = isList;
-  els.edDate.hidden = isList;
+  const folder = isFolder(n);
+  els.edBody.hidden = isList || folder;
+  els.edDate.hidden = isList || folder;
   els.edList.hidden = !isList;
   clear(els.edType).append(icon(isList ? 'text' : 'list'));
   els.edType.setAttribute('aria-label', isList ? 'Düz metne çevir' : 'Listeye çevir');
   if (isList) {
     if (!ed.items.length) ed.items.push({ id: newItemId(), t: '', d: false });
     renderList();
-  } else {
+  } else if (!folder) {
     els.edBody.value = n.body;
     requestAnimationFrame(() => autosize(els.edBody));
   }
+  renderLinks();
+}
+
+/** Metindeki bağlantıları tıklanabilir çip olarak gösterir (textarea içinde link tıklanamaz). */
+function renderLinks() {
+  const n = store.get(ed.id);
+  if (!n || isFolder(n)) { els.edLinks.hidden = true; return; }
+  const text = n.type === 'list' ? ed.items.map((i) => i.t).join('\n') : els.edBody.value;
+  const links = findLinks(text);
+  clear(els.edLinks);
+  if (!links.length) { els.edLinks.hidden = true; return; }
+  els.edLinks.append(h('span', { class: 'links-lbl' }, icon('link', 16), 'Bağlantılar'));
+  for (const l of links) els.edLinks.append(h('a', { class: 'link-chip', href: l.href, target: '_blank', rel: 'noopener noreferrer' }, l.label));
+  els.edLinks.hidden = false;
 }
 
 function queueSave(patch) {
@@ -517,6 +733,26 @@ function listRow(it) {
     it.t = ta.value.replace(/\n/g, ' ');
     autosize(ta);
     queueSave({ items: listItemsForSave() });
+    renderLinks();
+  });
+  ta.addEventListener('paste', (e) => {
+    const text = e.clipboardData && e.clipboardData.getData('text');
+    if (!text || !/\r?\n/.test(text.trim())) return;
+    const lines = splitPastedLines(text);
+    if (lines.length < 2) return;
+    // Çok satırlı yapıştırma: her satır ayrı madde olsun.
+    e.preventDefault();
+    const idx = ed.items.findIndex((i) => i.id === it.id);
+    if (!ta.value.trim()) {
+      it.t = lines[0];
+      lines.shift();
+    }
+    const fresh = lines.map((t) => ({ id: newItemId(), t, d: false }));
+    ed.items.splice(idx + 1, 0, ...fresh);
+    renderList(fresh.length ? fresh[fresh.length - 1].id : it.id);
+    queueSave({ items: listItemsForSave() });
+    renderLinks();
+    toast(`${lines.length + (ta.value.trim() ? 0 : 1)} madde eklendi.`, { ms: 2500 });
   });
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -608,16 +844,17 @@ function convertType() {
   fx.snap();
 }
 
+const popTrigger = () => ({ look: els.edColor, remind: els.edRemind, folder: els.edFolder });
+
 function closePopover() {
   if (!ed.pop) return;
   const hadFocus = els.pop.contains(document.activeElement);
-  const trigger = ed.pop === 'color' ? els.edColor : els.edSize;
+  const trigger = popTrigger()[ed.pop];
   ed.pop = null;
   els.pop.hidden = true;
   clear(els.pop);
-  els.edColor.setAttribute('aria-expanded', 'false');
-  els.edSize.setAttribute('aria-expanded', 'false');
-  if (hadFocus) trigger.focus({ preventScroll: true });
+  for (const b of [els.edColor, els.edRemind, els.edFolder]) b.setAttribute('aria-expanded', 'false');
+  if (hadFocus && trigger) trigger.focus({ preventScroll: true });
 }
 
 function openPopover(kind) {
@@ -627,56 +864,153 @@ function openPopover(kind) {
   if (!n) return;
   ed.pop = kind;
   clear(els.pop);
-  if (kind === 'color') {
-    els.pop.append(h('h4', null, 'Tuğla rengi'));
-    const g = h('div', { class: 'swatches' });
-    for (const c of COLORS) {
-      g.append(h('button', {
-        type: 'button', class: 'swatch c-' + c.key, 'aria-label': c.name,
-        'aria-pressed': String(colorKey(n.color) === c.key),
-        onclick: () => {
-          flushSave();
-          store.edit(ed.id, { color: c.key });
-          store.setMeta('lastColor', c.key);
-          els.ed.className = 'ed c-' + c.key;
-          for (const b of g.children) b.setAttribute('aria-pressed', String(b.classList.contains('c-' + c.key)));
-          fx.snap();
-          fx.buzz(8);
-          updateEdInfo();
-          setTimeout(closePopover, 260);
-        },
-      }, colorKey(n.color) === c.key ? icon('check', 16) : null));
-    }
-    els.pop.append(g);
-    els.edColor.setAttribute('aria-expanded', 'true');
-  } else {
-    els.pop.append(h('h4', null, 'Tuğla boyutu (genişlik × yükseklik)'));
-    const g = h('div', { class: 'sizes' });
-    const cur = SIZES.includes(n.size) ? n.size : 'auto';
-    for (const s of ['auto', ...SIZES]) {
-      let mini;
-      if (s === 'auto') mini = h('span', { class: 'mini auto' }, 'A');
-      else {
-        const [w, hh] = s.split('x').map(Number);
-        mini = h('span', { class: 'mini', style: { '--w': w } });
-        for (let i = 0; i < w * hh; i++) mini.append(h('i'));
-      }
-      g.append(h('button', {
-        type: 'button', class: 'size-opt', 'aria-pressed': String(cur === s),
-        onclick: () => {
-          flushSave();
-          store.edit(ed.id, { size: s });
-          fx.snap();
-          setTimeout(closePopover, 200);
-        },
-      }, mini, s === 'auto' ? 'Otomatik' : s.replace('x', '×')));
-    }
-    els.pop.append(g);
-    els.edSize.setAttribute('aria-expanded', 'true');
-  }
+  if (kind === 'look') buildLookPop(n);
+  else if (kind === 'remind') buildRemindPop(n);
+  else buildFolderPop(n);
+  popTrigger()[kind].setAttribute('aria-expanded', 'true');
   els.pop.hidden = false;
-  const firstBtn = els.pop.querySelector('button[aria-pressed="true"]') || els.pop.querySelector('button');
-  if (firstBtn) firstBtn.focus({ preventScroll: true });
+  const firstBtn = els.pop.querySelector('button[aria-pressed="true"]') || els.pop.querySelector('button, input, select');
+  if (firstBtn && kind !== 'remind') firstBtn.focus({ preventScroll: true });
+}
+
+function buildLookPop(n) {
+  els.pop.append(h('h4', null, 'Tuğla rengi'));
+  const g = h('div', { class: 'swatches' });
+  for (const c of COLORS) {
+    g.append(h('button', {
+      type: 'button', class: 'swatch c-' + c.key, 'aria-label': c.name,
+      'aria-pressed': String(colorKey(n.color) === c.key),
+      onclick: () => {
+        flushSave();
+        store.edit(ed.id, { color: c.key });
+        store.setMeta('lastColor', c.key);
+        els.ed.className = 'ed c-' + c.key;
+        for (const b of g.children) b.setAttribute('aria-pressed', String(b.classList.contains('c-' + c.key)));
+        fx.snap();
+        fx.buzz(8);
+        updateEdInfo();
+      },
+    }, colorKey(n.color) === c.key ? icon('check', 16) : null));
+  }
+  els.pop.append(g);
+  els.pop.append(h('h4', { style: { marginTop: '14px' } }, 'Boyut (genişlik × yükseklik)'));
+  const sg = h('div', { class: 'sizes' });
+  const cur = parseSize(n.size) ? n.size : 'auto';
+  for (const s of ['auto', ...SIZES]) {
+    let mini;
+    if (s === 'auto') mini = h('span', { class: 'mini auto' }, 'A');
+    else {
+      const [w, hh] = s.split('x').map(Number);
+      mini = h('span', { class: 'mini', style: { '--w': w } });
+      for (let i = 0; i < w * hh; i++) mini.append(h('i'));
+    }
+    sg.append(h('button', {
+      type: 'button', class: 'size-opt', 'aria-pressed': String(cur === s),
+      onclick: () => {
+        flushSave();
+        store.edit(ed.id, { size: s }, { touch: false });
+        for (const b of sg.children) b.setAttribute('aria-pressed', 'false');
+        fx.snap();
+        closePopover();
+      },
+    }, mini, s === 'auto' ? 'Otomatik' : s.replace('x', '×')));
+  }
+  els.pop.append(sg);
+  const custom = parseSize(n.size);
+  els.pop.append(h('p', { class: 'pop-hint' },
+    (custom && !SIZES.includes(n.size) ? `Şu an özel boyut: ${custom.w}×${custom.h}. ` : '') +
+    'Serbest ayar: ana sayfada "Düzenle"ye bas, tuğlanın köşesinden sürükle.'));
+}
+
+/** Klasör ağacını girintili düz liste olarak döndürür; excludeId ve altı hariç. */
+function folderTree(excludeId) {
+  const folders = store.all().filter((f) => isFolder(f) && !f.trashedAt && !f._purge);
+  const valid = new Set(folders.map((f) => f.id));
+  const byParent = new Map();
+  for (const f of folders) {
+    const k = f.folderId && valid.has(f.folderId) && f.folderId !== f.id ? f.folderId : '';
+    if (!byParent.has(k)) byParent.set(k, []);
+    byParent.get(k).push(f);
+  }
+  const out = [];
+  const walk = (parent, depth) => {
+    const kids = (byParent.get(parent) || []).sort((a, b) => a.title.localeCompare(b.title, 'tr'));
+    for (const f of kids) {
+      if (f.id === excludeId || depth > 12) continue;
+      out.push({ f, depth });
+      walk(f.id, depth + 1);
+    }
+  };
+  walk('', 0);
+  return out;
+}
+
+function buildFolderPop(n) {
+  els.pop.append(h('h4', null, 'Klasöre taşı'));
+  const list = h('div', { class: 'folder-list' });
+  const valid = validFolderIds();
+  const curId = effFolder(n, valid);
+  const item = (label, depth, id, ico) =>
+    h('button', {
+      type: 'button', class: 'folder-item', 'aria-pressed': String(curId === id), style: { paddingLeft: 10 + depth * 18 + 'px' },
+      onclick: () => {
+        flushSave();
+        store.edit(ed.id, { folderId: id }, { touch: false });
+        fx.snap();
+        toast(id ? `"${label}" klasörüne taşındı` : 'Ana sayfaya taşındı');
+        closePopover();
+      },
+    }, icon(ico, 18), label);
+  list.append(item('Ana sayfa', 0, null, 'home'));
+  for (const { f, depth } of folderTree(isFolder(n) ? n.id : null)) list.append(item(f.title.trim() || 'Adsız klasör', depth + 1, f.id, 'folder'));
+  els.pop.append(list);
+  if (list.children.length === 1) els.pop.append(h('p', { class: 'pop-hint' }, 'Henüz klasör yok. Sağ alttaki klasör düğmesiyle oluştur.'));
+}
+
+async function ensureNotifyPermission() {
+  if (!('Notification' in window)) return 'unsupported';
+  if (Notification.permission === 'default') {
+    try { return await Notification.requestPermission(); } catch { return 'denied'; }
+  }
+  return Notification.permission;
+}
+
+function buildRemindPop(n) {
+  const wrap = h('div', { class: 'remind-pop' });
+  wrap.append(h('h4', null, 'Hatırlatıcı'));
+  if (n.remindAt) {
+    wrap.append(h('div', { class: 'remind-current' },
+      icon('bell', 18),
+      h('span', null, fmtFull(n.remindAt) + (n.remindFired ? ' · çaldı' : '') + (n.remindRepeat && n.remindRepeat !== 'none' ? ' · tekrarlı' : '')),
+      h('button', { type: 'button', class: 'link-btn', onclick: clearReminder }, 'Kaldır')));
+  }
+  const input = h('input', { type: 'datetime-local', 'aria-label': 'Tarih ve saat', value: toLocalInput(n.remindAt && !n.remindFired ? n.remindAt : Date.now() + 3_600_000) });
+  const rep = h('select', { 'aria-label': 'Tekrar' },
+    ...[['none', 'Tekrarlama'], ['daily', 'Her gün'], ['weekly', 'Her hafta'], ['monthly', 'Her ay']].map(([v, l]) =>
+      h('option', { value: v, selected: (n.remindRepeat || 'none') === v ? '' : null }, l)));
+  const pre = h('div', { class: 'remind-presets' });
+  for (const p of presets()) pre.append(h('button', { type: 'button', class: 'size-opt wide', onclick: () => setReminder(p.ts, rep.value) }, p.label));
+  wrap.append(pre, h('div', { class: 'remind-row' }, input, rep));
+  wrap.append(h('div', { class: 'btns' },
+    h('button', {
+      class: 'btn primary', type: 'button',
+      onclick: () => {
+        const t = fromLocalInput(input.value);
+        if (!t) { toast('Geçerli bir tarih ve saat seç.'); return; }
+        setReminder(t, rep.value);
+      },
+    }, 'Kur'),
+    h('button', {
+      class: 'btn', type: 'button',
+      onclick: () => {
+        const t = fromLocalInput(input.value) || n.remindAt;
+        if (!t) { toast('Önce bir tarih ve saat seç.'); return; }
+        flushSave();
+        downloadIcs({ ...store.get(ed.id), remindAt: t, remindRepeat: rep.value });
+      },
+    }, icon('calendar', 18), 'Takvime ekle')));
+  wrap.append(h('p', { class: 'pop-hint' }, 'Uyarı, uygulama açıkken (ya da arka planda çalışırken) görünür ve bildirim gelir. Uygulama kapalıyken de çalsın istersen "Takvime ekle"yi kullan; telefonun kendi takvimi çaldırır.'));
+  els.pop.append(wrap);
 }
 
 function syncViewport() {
@@ -814,6 +1148,11 @@ function trashFromEditor() {
   if (!n) return;
   if (ed.fresh && isEmptyNote(n)) { requestCloseEditor(); return; }
   flushSave();
+  if (isFolder(n)) {
+    if (!trashFolder(id)) return;
+    requestCloseEditor();
+    return;
+  }
   store.trash(id);
   toast('Çöpe taşındı', { action: { label: 'Geri al', fn: () => store.restore(id) } });
   requestCloseEditor();
@@ -854,6 +1193,8 @@ function refreshEditorFromStore() {
   }
   els.ed.className = 'ed c-' + colorKey(n.color);
   els.edPin.setAttribute('aria-pressed', String(!!n.pinned));
+  updateRemindBtn(n);
+  renderLinks();
   updateEdInfo();
 }
 
@@ -1026,11 +1367,11 @@ function renderSettings() {
     h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Yazı tipi'),
       seg([['round', 'Yuvarlak'], ['system', 'Sade'], ['mono', 'Kod']], prefs.font, (v) => { prefs.font = v; savePrefs(); renderSettings(); })),
     h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Sıralama'),
-      seg([['updated', 'Düzenleme'], ['created', 'Oluşturma'], ['title', 'Başlık'], ['color', 'Renk']], prefs.sort, (v) => { prefs.sort = v; savePrefs(); renderSettings(); render(); })),
+      seg([['updated', 'Düzenleme'], ['created', 'Oluşturma'], ['title', 'Başlık'], ['color', 'Renk'], ['manual', 'Elle']], prefs.sort, (v) => { prefs.sort = v; savePrefs(); renderSettings(); render(); })),
   );
   look.append(h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Taban plakası', h('span', { class: 'sub' }, 'Tuğlaların oturduğu zemin')), plates));
   look.append(h('div', { class: 'row' },
-    h('span', { class: 'lbl' }, 'Klavye kısayolları', h('span', { class: 'sub' }, 'n yeni not, l yeni liste, / ara')),
+    h('span', { class: 'lbl' }, 'Klavye kısayolları', h('span', { class: 'sub' }, 'n yeni not, l yeni liste, k yeni klasör, / ara')),
     h('button', {
       type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(prefs.shortcuts !== false), 'aria-label': 'Klavye kısayolları',
       onclick: () => { prefs.shortcuts = prefs.shortcuts === false; savePrefs(); renderSettings(); },
@@ -1332,6 +1673,188 @@ function maybeIosHint() {
   document.body.append(hint);
 }
 
+// ------------------------------------------------------------------ hatırlatıcılar
+
+function setReminder(ts, repeat) {
+  if (ts < Date.now() + 5000) { toast('Geçmiş bir zaman seçtin. İleri bir tarih ve saat seç.'); return; }
+  const permP = ensureNotifyPermission(); // izin penceresi kullanıcı hareketi içinde açılmalı
+  flushSave();
+  store.edit(ed.id, { remindAt: ts, remindFired: false, remindRepeat: repeat || 'none' }, { touch: false });
+  closePopover();
+  updateRemindBtn();
+  updateEdInfo();
+  toast('Hatırlatıcı kuruldu: ' + fmtFull(ts));
+  permP.then((perm) => {
+    if (perm !== 'granted') {
+      toast('Bildirim izni yok: uyarı yalnızca uygulama açıkken görünür. Garanti için "Takvime ekle"yi kullan.', { ms: 9000 });
+    }
+  });
+}
+
+function clearReminder() {
+  flushSave();
+  store.edit(ed.id, { remindAt: null, remindFired: false, remindRepeat: 'none' }, { touch: false });
+  closePopover();
+  updateRemindBtn();
+  updateEdInfo();
+  toast('Hatırlatıcı kaldırıldı.');
+}
+
+function downloadIcs(n) {
+  const blob = new Blob([buildIcs(n)], { type: 'text/calendar;charset=utf-8' });
+  const a = h('a', { href: URL.createObjectURL(blob), download: 'hatirlatici.ics' });
+  document.body.append(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  toast('Takvim dosyası indirildi; açınca takvime eklenir ve orada çalar.', { ms: 6000 });
+}
+
+const ringing = new Map(); // not kimliği -> tepsideki öğe
+
+async function notifyReminder(n, title) {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const body = (n.type === 'list' ? (n.items || []).filter((i) => !i.d).map((i) => i.t).join(', ') : n.body).trim().slice(0, 140) || 'Hatırlatıcı';
+    const opts = { body, tag: 'remind-' + n.id, data: { id: n.id }, icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', renotify: true };
+    const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+    if (reg && reg.showNotification) await reg.showNotification('⏰ ' + title, opts);
+    else new Notification('⏰ ' + title, opts);
+  } catch {}
+}
+
+function dismissRing(id) {
+  const el = ringing.get(id);
+  if (el) { el.remove(); ringing.delete(id); }
+}
+
+function snooze(id, minutes) {
+  dismissRing(id);
+  store.edit(id, { remindAt: Date.now() + minutes * 60_000, remindFired: false }, { touch: false });
+  toast(`${minutes} dk sonra tekrar hatırlatılacak.`);
+}
+
+function ring(n, lateMs) {
+  const title = n.title.trim() || (n.type === 'list' ? 'Liste' : 'Not');
+  const late = lateMs > 120_000;
+  notifyReminder(n, title);
+  fx.chime();
+  fx.buzz(30);
+  dismissRing(n.id);
+  const item = h('div', { class: 'tray-item c-' + colorKey(n.color), role: 'alert' },
+    h('div', { class: 'tray-main' },
+      icon('bell', 20),
+      h('div', { class: 'tray-text' }, h('b', null, title), h('span', null, late ? Math.max(1, Math.round(lateMs / 60_000)) + ' dk önce çalmalıydı' : 'Şimdi'))),
+    h('div', { class: 'tray-actions' },
+      h('button', { type: 'button', onclick: () => { dismissRing(n.id); openCard(n.id); } }, 'Aç'),
+      h('button', { type: 'button', onclick: () => snooze(n.id, 10) }, '10 dk ertele'),
+      h('button', { type: 'button', class: 'ok', onclick: () => dismissRing(n.id) }, 'Tamam')));
+  els.tray.append(item);
+  ringing.set(n.id, item);
+}
+
+function checkReminders() {
+  if (!store) return;
+  const now = Date.now();
+  for (const n of dueReminders(store.all(), now)) {
+    const next = nextOccurrence(n.remindAt, n.remindRepeat, now);
+    if (next) store.edit(n.id, { remindAt: next, remindFired: false }, { touch: false });
+    else store.edit(n.id, { remindFired: true }, { touch: false });
+    ring(n, now - n.remindAt);
+  }
+}
+
+// ------------------------------------------------------------------ düzenleme modu (sürükle / boyutlandır)
+
+let arrange = null;
+
+function setArranging(on) {
+  on = !!on;
+  if (on === ui.arranging) return;
+  if (on && (ui.filter === 'trash' || ui.query.trim())) {
+    toast('Düzenlemek için önce aramayı ya da çöp görünümünü kapat.');
+    return;
+  }
+  ui.arranging = on;
+  document.body.classList.toggle('arranging', on);
+  els.arrangeBar.hidden = !on;
+  const chip = document.getElementById('arrangeChip');
+  if (chip) chip.setAttribute('aria-pressed', String(on));
+  if (arrange) arrange.cancel();
+  if (on) fx.snap(0.8);
+}
+
+/** Bırakılan tuğlanın yeni sırasını kaydeder (yalnızca onun değeri değişir). */
+function commitReorder(id, prevId, nextId) {
+  if (prefs.sort !== 'manual') {
+    prefs.sort = 'manual';
+    savePrefs();
+    toast('Sıralama "Elle" olarak ayarlandı. Ayarlar\'dan değiştirebilirsin.', { ms: 4500 });
+  }
+  const ids = [...els.grid.children].map((c) => c.dataset.id).filter(Boolean);
+  const notes = ids.map((i) => store.get(i)).filter(Boolean);
+  const num = (n) => typeof n.order === 'number';
+  const others = notes.filter((n) => n.id !== id);
+  const consistent = others.every(num) && others.every((n, i) => i === 0 || others[i - 1].order < n.order);
+  if (consistent) {
+    const p = prevId ? store.get(prevId) : null;
+    const x = nextId ? store.get(nextId) : null;
+    const pv = p && num(p) ? p.order : null;
+    const nv = x && num(x) ? x.order : null;
+    let o;
+    if (pv == null && nv == null) o = 0;
+    else if (pv == null) o = nv - 1024;
+    else if (nv == null) o = pv + 1024;
+    else o = (pv + nv) / 2;
+    if ((pv == null || o > pv) && (nv == null || o < nv)) {
+      store.edit(id, { order: o }, { touch: false });
+      return;
+    }
+  }
+  // İlk kez ya da sayılar sıkıştıysa: görünür tuğlaları sırayla numarala.
+  notes.forEach((n, i) => {
+    const want = (i + 1) * 1024;
+    if (n.order !== want) store.edit(n.id, { order: want }, { touch: false });
+  });
+}
+
+function moveInto(id, folderId) {
+  const n = store.get(id);
+  if (!n || folderId === id) return;
+  const old = n.folderId || null;
+  const target = folderId ? store.get(folderId) : null;
+  store.edit(id, { folderId: folderId || null }, { touch: false });
+  fx.snap();
+  toast(`${target ? '"' + (target.title.trim() || 'Klasör') + '" içine' : 'Ana sayfaya'} taşındı`, {
+    action: { label: 'Geri al', fn: () => store.edit(id, { folderId: old }, { touch: false }) },
+  });
+}
+
+function initArrangeEngine() {
+  arrange = initArrange({
+    grid: els.grid,
+    info: () => ({ cols: ui.cols, cell: ui.cell }),
+    enabled: () => ui.filter !== 'trash' && !ui.query.trim() && !ed.id && !sheetOpen,
+    arranging: () => ui.arranging,
+    onLongPress: () => {
+      setArranging(true);
+      fx.buzz(15);
+      toast('Düzenleme modu: ✥ ile sürükle, köşeden boyutlandır.', { ms: 3500 });
+    },
+    isFolderCard: (el) => el.classList.contains('folder'),
+    getDims: getBrickDims,
+    setDims: setBrickDims,
+    onDragStart: () => { ui.dragging = true; },
+    onDragEnd: () => {
+      ui.dragging = false;
+      if (ui.pendingRender) { ui.pendingRender = false; scheduleRender(); }
+    },
+    onReorder: commitReorder,
+    onDropInto: moveInto,
+    onResize: (id, w, hh) => { store.edit(id, { size: w + 'x' + hh }, { touch: false }); fx.snap(0.8); },
+    onCancel: () => scheduleRender(),
+  });
+}
+
 // ------------------------------------------------------------------ bağlama
 
 function wire() {
@@ -1345,8 +1868,11 @@ function wire() {
   els.edBackdrop.addEventListener('click', requestCloseEditor);
   els.edPin.addEventListener('click', togglePinFromEditor);
   els.edType.addEventListener('click', convertType);
-  els.edColor.addEventListener('click', () => openPopover('color'));
-  els.edSize.addEventListener('click', () => openPopover('size'));
+  els.edColor.addEventListener('click', () => openPopover('look'));
+  els.edRemind.addEventListener('click', () => openPopover('remind'));
+  els.edFolder.addEventListener('click', () => openPopover('folder'));
+  els.fabFolder.addEventListener('click', createFolder);
+  els.arrangeDone.addEventListener('click', () => setArranging(false));
   els.edTrash.addEventListener('click', trashFromEditor);
   els.edCopy.addEventListener('click', copyCurrentNote);
   els.edShare.addEventListener('click', shareCurrentNote);
@@ -1365,10 +1891,11 @@ function wire() {
   els.edBody.addEventListener('input', () => {
     autosize(els.edBody);
     queueSave({ body: els.edBody.value });
+    renderLinks();
   });
   els.edScroll.addEventListener('pointerdown', (e) => { if (ed.pop && !els.pop.contains(e.target)) closePopover(); });
   document.addEventListener('pointerdown', (e) => {
-    if (ed.pop && !els.pop.contains(e.target) && !e.target.closest('#edColor, #edSize')) closePopover();
+    if (ed.pop && !els.pop.contains(e.target) && !e.target.closest('#edColor, #edRemind, #edFolder')) closePopover();
   });
 
   // arama
@@ -1401,12 +1928,14 @@ function wire() {
       if (ed.pop) { closePopover(); return; }
       if (ed.id) { requestCloseEditor(); return; }
       if (sheetOpen) { requestCloseSheet(); return; }
+      if (ui.arranging) { setArranging(false); return; }
       if (document.activeElement === els.q) { els.q.value = ''; ui.query = ''; els.qClear.hidden = true; els.q.blur(); render(); }
       return;
     }
     if (typing || e.ctrlKey || e.metaKey || e.altKey || ed.id || sheetOpen || prefs.shortcuts === false) return;
     if (e.key === 'n') { e.preventDefault(); createNote('text'); }
     else if (e.key === 'l') { e.preventDefault(); createNote('list'); }
+    else if (e.key === 'k') { e.preventDefault(); createFolder(); }
     else if (e.key === '/') { e.preventDefault(); els.top.classList.add('searching'); els.q.focus(); }
   });
   document.addEventListener('keydown', (e) => {
@@ -1438,6 +1967,10 @@ function registerSW() {
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   const had = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', (ev) => {
+    const d = ev.data;
+    if (d && d.type === 'open-note' && typeof d.id === 'string' && store && store.get(d.id)) openCard(d.id);
+  });
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!had) return;
     toast('Yeni sürüm hazır.', { ms: 12000, action: { label: 'Yenile', fn: () => location.reload() } });
@@ -1451,9 +1984,14 @@ function handleLaunchParams() {
   let q;
   try { q = new URLSearchParams(location.search); } catch { return; }
   const kind = q.get('new');
+  const openId = q.get('open');
   const shared = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n');
-  if (!kind && !shared) return;
+  if (!kind && !shared && !openId) return;
   try { history.replaceState(null, '', location.pathname); } catch {}
+  if (openId && /^[A-Za-z0-9_-]{1,64}$/.test(openId)) {
+    setTimeout(() => { if (store.get(openId)) openCard(openId); }, 400);
+    return;
+  }
   if (shared) {
     const title = (q.get('title') || '').slice(0, 200);
     const body = [q.get('text'), q.get('url')].filter(Boolean).join('\n').slice(0, 20000);
@@ -1477,8 +2015,8 @@ function handleLaunchParams() {
 }
 
 async function boot() {
-  for (const id of ['top', 'boardWrap', 'fabs', 'edCopy', 'edShare', 'edDate', 'q', 'qClear', 'searchToggle', 'syncBtn', 'settingsBtn', 'chips', 'board', 'grid', 'empty', 'emptyTitle', 'emptyText',
-    'fabNew', 'fabList', 'editor', 'edBackdrop', 'ed', 'edStuds', 'edBack', 'edPin', 'edType', 'edColor', 'edSize', 'edTrash', 'edPaper',
+  for (const id of ['top', 'boardWrap', 'fabs', 'fabFolder', 'crumbs', 'arrangeBar', 'arrangeDone', 'tray', 'edRemind', 'edFolder', 'edLinks', 'edCopy', 'edShare', 'edDate', 'q', 'qClear', 'searchToggle', 'syncBtn', 'settingsBtn', 'chips', 'board', 'grid', 'empty', 'emptyTitle', 'emptyText',
+    'fabNew', 'fabList', 'editor', 'edBackdrop', 'ed', 'edStuds', 'edBack', 'edPin', 'edType', 'edColor', 'edTrash', 'edPaper',
     'edScroll', 'edTitle', 'edBody', 'edList', 'edInfo', 'pop', 'sheet', 'sheetBackdrop', 'sheetPanel', 'sheetTitle', 'sheetClose', 'sheetBody', 'toasts']) {
     els[id] = $(id);
   }
@@ -1501,6 +2039,7 @@ async function boot() {
   sync = new SyncEngine(store, { apiBase: (() => { try { return (localHost && localStorage.getItem('unb_api')) || undefined; } catch { return undefined; } })() });
   buildChips();
   wire();
+  initArrangeEngine();
   layoutGrid();
   render();
   store.on((ev) => {
@@ -1515,9 +2054,13 @@ async function boot() {
   sync.start();
   registerSW();
   handleLaunchParams();
+  setInterval(checkReminders, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkReminders(); });
+  store.on((ev) => { if (ev.origin !== 'local') checkReminders(); });
+  setTimeout(checkReminders, 1200);
   setTimeout(() => { maybeFirstRun(); maybeIosHint(); }, 700);
 
-  if (localHost) window.__unb = { store, sync, render, VERSION }; // hata ayıklama: yalnızca yerel geliştirmede
+  if (localHost) window.__unb = { store, sync, render, checkReminders, setArranging, VERSION }; // hata ayıklama: yalnızca yerel geliştirmede
 }
 
 boot().catch((e) => {

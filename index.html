@@ -43,6 +43,7 @@
 
   <main class="board-wrap" id="boardWrap">
     <div class="board" id="board">
+      <nav class="crumbs" id="crumbs" hidden aria-label="Klasör yolu"></nav>
       <div class="grid" id="grid"></div>
       <div class="empty" id="empty" hidden>
         <img src="icons/icon.svg" alt="" width="132" height="132">
@@ -53,6 +54,7 @@
   </main>
 
   <div class="fabs" id="fabs">
+    <button class="fab fab-folder" id="fabFolder" type="button" aria-label="Yeni klasör"><span class="fab-studs"><i></i><i></i></span><span data-icon="folder" data-size="22"></span></button>
     <button class="fab fab-list" id="fabList" type="button" aria-label="Yeni liste"><span class="fab-studs"><i></i><i></i></span><span data-icon="list" data-size="24"></span></button>
     <button class="fab fab-new" id="fabNew" type="button" aria-label="Yeni not"><span class="fab-studs"><i></i><i></i></span><span data-icon="plus" data-size="32"></span></button>
   </div>
@@ -66,8 +68,9 @@
         <span class="grow"></span>
         <button class="ib" id="edPin" type="button" aria-label="Sabitle"><span data-icon="pin"></span></button>
         <button class="ib" id="edType" type="button" aria-label="Liste ve metin arasında geç"><span data-icon="list"></span></button>
-        <button class="ib" id="edColor" type="button" aria-label="Renk" aria-haspopup="true" aria-expanded="false"><span data-icon="drop"></span></button>
-        <button class="ib" id="edSize" type="button" aria-label="Tuğla boyutu" aria-haspopup="true" aria-expanded="false"><span data-icon="grid"></span></button>
+        <button class="ib" id="edColor" type="button" aria-label="Renk ve boyut" aria-haspopup="true" aria-expanded="false"><span data-icon="drop"></span></button>
+        <button class="ib" id="edRemind" type="button" aria-label="Hatırlatıcı kur" aria-haspopup="true" aria-expanded="false"><span data-icon="bell"></span></button>
+        <button class="ib" id="edFolder" type="button" aria-label="Klasöre taşı" aria-haspopup="true" aria-expanded="false"><span data-icon="folder"></span></button>
         <button class="ib" id="edTrash" type="button" aria-label="Çöpe at"><span data-icon="trash"></span></button>
       </header>
       <div class="pop" id="pop" role="group" aria-label="Seçenekler" hidden></div>
@@ -76,6 +79,7 @@
           <input id="edTitle" class="ed-title" type="text" placeholder="Başlık" autocomplete="off" enterkeyhint="next" maxlength="200" aria-label="Başlık">
           <textarea id="edBody" class="ed-body" placeholder="Notunu buraya yaz…" rows="1" aria-label="Not"></textarea>
           <div id="edList" class="ed-list" hidden></div>
+          <div id="edLinks" class="ed-links" hidden></div>
         </div>
         <footer class="ed-foot">
           <span id="edInfo"></span>
@@ -101,6 +105,12 @@
     </section>
   </div>
 
+  <div class="arrange-bar" id="arrangeBar" hidden>
+    <span>Düzenleme modu · ✥ ile sürükle, köşeden boyutlandır</span>
+    <button class="btn primary" id="arrangeDone" type="button">Bitti</button>
+  </div>
+
+  <div class="tray" id="tray" aria-live="assertive"></div>
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <noscript><p style="padding:24px;font-family:sans-serif">Not Defterim çalışmak için JavaScript gerektirir.</p></noscript>
