@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9C7BFF"/>
+      <stop offset="1" stop-color="#3DB5FF"/>
+    </linearGradient>
+    <linearGradient id="horn" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#FF86B4"/>
+      <stop offset="1" stop-color="#FFF0B8"/>
+    </linearGradient>
+    <clipPath id="hornClip">
+      <path d="M230 226 Q248 160 268 86 Q286 160 282 226 Z"/>
+    </clipPath>
+    <path id="spark" d="M0 -22 Q3 -3 22 0 Q3 3 0 22 Q-3 3 -22 0 Q-3 -3 0 -22 Z"/>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g transform="translate(256 256) scale(0.76) translate(-256 -256)">
+  <use href="#spark" transform="translate(90 140) scale(.8)" fill="#fff" opacity=".9"/>
+  <use href="#spark" transform="translate(430 118)" fill="#fff" opacity=".9"/>
+  <use href="#spark" transform="translate(452 300) scale(.6)" fill="#fff" opacity=".8"/>
+  <use href="#spark" transform="translate(70 330) scale(.5)" fill="#fff" opacity=".7"/>
+  <!-- studs -->
+  <g>
+    <path d="M130 224 v16 a38 14 0 0 0 76 0 v-16 z" fill="#E0A800"/>
+    <ellipse cx="168" cy="224" rx="38" ry="15" fill="#FFDA55"/>
+    <path d="M218 224 v16 a38 14 0 0 0 76 0 v-16 z" fill="#E0A800"/>
+    <ellipse cx="256" cy="224" rx="38" ry="15" fill="#FFDA55"/>
+    <path d="M306 224 v16 a38 14 0 0 0 76 0 v-16 z" fill="#E0A800"/>
+    <ellipse cx="344" cy="224" rx="38" ry="15" fill="#FFDA55"/>
+  </g>
+  <!-- unicorn horn -->
+  <path d="M230 226 Q248 160 268 86 Q286 160 282 226 Z" fill="url(#horn)"/>
+  <g clip-path="url(#hornClip)" stroke="#FF5C9A" stroke-width="10" stroke-linecap="round">
+    <path d="M222 206 L296 188"/>
+    <path d="M226 170 L296 152"/>
+    <path d="M238 134 L296 118"/>
+  </g>
+  <!-- brick body -->
+  <rect x="96" y="246" width="320" height="190" rx="30" fill="#D9A100"/>
+  <rect x="96" y="232" width="320" height="190" rx="30" fill="#FFCB1F"/>
+  <rect x="114" y="246" width="284" height="14" rx="7" fill="#fff" opacity=".4"/>
+  <!-- face -->
+  <circle cx="186" cy="322" r="17" fill="#25233A"/>
+  <circle cx="326" cy="322" r="17" fill="#25233A"/>
+  <circle cx="192" cy="315" r="6" fill="#fff"/>
+  <circle cx="332" cy="315" r="6" fill="#fff"/>
+  <ellipse cx="146" cy="354" rx="22" ry="13" fill="#FF8FB8" opacity=".7"/>
+  <ellipse cx="366" cy="354" rx="22" ry="13" fill="#FF8FB8" opacity=".7"/>
+  <path d="M238 342 Q256 366 274 342" stroke="#25233A" stroke-width="8" stroke-linecap="round" fill="none"/>
+  </g>
+</svg>

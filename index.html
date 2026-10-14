@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="tr" data-scheme="light" data-plate="gray">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Not Defterim</title>
+  <meta name="description" content="Unicornlu Not Defterim — Lego tuğlalarından notlar, tüm cihazlarında eşitlenir.">
+  <meta name="theme-color" content="#f3efe8">
+  <meta name="color-scheme" content="light dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Not Defterim">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="preload" href="fonts/fredoka-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <script>
+    // Tema ilk boyamadan önce uygulanır (beyaz parlama olmasın).
+    try {
+      var p = JSON.parse(localStorage.getItem('unb:prefs') || '{}');
+      var d = document.documentElement;
+      var s = p.scheme || 'auto';
+      if (s === 'auto') s = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      d.dataset.scheme = s;
+      d.dataset.plate = p.plate || 'gray';
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="top" id="top">
+    <div class="top-row">
+      <a class="brand" href="./" aria-label="Not Defterim">
+        <img class="logo" src="icons/icon.svg" alt="" width="40" height="40">
+        <span class="brand-name">Not Defterim</span>
+      </a>
+      <label class="search" id="search">
+        <span data-icon="search" data-size="20"></span>
+        <input id="q" type="search" placeholder="Notlarda ara…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Notlarda ara">
+        <button class="search-clear" id="qClear" type="button" hidden aria-label="Aramayı temizle"><span data-icon="x" data-size="16"></span></button>
+      </label>
+      <button class="ib search-toggle" id="searchToggle" type="button" aria-label="Ara"><span data-icon="search"></span></button>
+      <button class="ib sync" id="syncBtn" type="button" data-state="off" aria-label="Eşitleme durumu"><span data-icon="cloud"></span><i class="sync-dot"></i></button>
+      <button class="ib" id="settingsBtn" type="button" aria-label="Ayarlar"><span data-icon="sliders"></span></button>
+    </div>
+    <nav class="chips" id="chips" aria-label="Renge göre filtrele"></nav>
+  </header>
+
+  <main class="board-wrap">
+    <div class="board" id="board">
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden>
+        <img src="icons/icon.svg" alt="" width="132" height="132">
+        <h2 id="emptyTitle">Taban plakası boş</h2>
+        <p id="emptyText">İlk tuğlanı eklemek için sağ alttaki <b>+</b> düğmesine bas.</p>
+      </div>
+    </div>
+  </main>
+
+  <div class="fabs" id="fabs">
+    <button class="fab fab-list" id="fabList" type="button" aria-label="Yeni liste"><span class="fab-studs"><i></i><i></i></span><span data-icon="list" data-size="24"></span></button>
+    <button class="fab fab-new" id="fabNew" type="button" aria-label="Yeni not"><span class="fab-studs"><i></i><i></i></span><span data-icon="plus" data-size="32"></span></button>
+  </div>
+
+  <div class="editor" id="editor" hidden>
+    <div class="ed-backdrop" id="edBackdrop"></div>
+    <section class="ed c-yellow" id="ed" role="dialog" aria-modal="true" aria-label="Not düzenle">
+      <div class="ed-studs" id="edStuds" aria-hidden="true"></div>
+      <header class="ed-bar">
+        <button class="ib" id="edBack" type="button" aria-label="Kapat"><span data-icon="back"></span></button>
+        <span class="grow"></span>
+        <button class="ib" id="edPin" type="button" aria-label="Sabitle"><span data-icon="pin"></span></button>
+        <button class="ib" id="edType" type="button" aria-label="Liste ve metin arasında geç"><span data-icon="list"></span></button>
+        <button class="ib" id="edColor" type="button" aria-label="Renk"><span data-icon="drop"></span></button>
+        <button class="ib" id="edSize" type="button" aria-label="Tuğla boyutu"><span data-icon="grid"></span></button>
+        <button class="ib" id="edTrash" type="button" aria-label="Çöpe at"><span data-icon="trash"></span></button>
+      </header>
+      <div class="ed-paper" id="edPaper">
+        <div class="ed-scroll" id="edScroll">
+          <input id="edTitle" class="ed-title" type="text" placeholder="Başlık" autocomplete="off" enterkeyhint="next" maxlength="200" aria-label="Başlık">
+          <textarea id="edBody" class="ed-body" placeholder="Notunu buraya yaz…" rows="1" aria-label="Not"></textarea>
+          <div id="edList" class="ed-list" hidden></div>
+        </div>
+        <footer class="ed-foot"><span id="edInfo"></span></footer>
+      </div>
+      <div class="pop" id="pop" hidden></div>
+    </section>
+  </div>
+
+  <div class="sheet" id="sheet" hidden>
+    <div class="sheet-backdrop" id="sheetBackdrop"></div>
+    <section class="sheet-panel" id="sheetPanel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheet-grab" aria-hidden="true"></div>
+      <header class="sheet-head">
+        <h2 id="sheetTitle"></h2>
+        <button class="ib" id="sheetClose" type="button" aria-label="Kapat"><span data-icon="x"></span></button>
+      </header>
+      <div class="sheet-body" id="sheetBody"></div>
+    </section>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <noscript><p style="padding:24px;font-family:sans-serif">Not Defterim çalışmak için JavaScript gerektirir.</p></noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
