@@ -124,21 +124,22 @@ export function morph(el, fromRect, { reverse = false, duration = 440 } = {}) {
   });
 }
 
-export function done(anim) {
-  return anim && anim.finished ? anim.finished.catch(() => {}) : Promise.resolve();
+/** Animasyon bitince çöz; takılırsa (arka plan, sekme gizli) ms sonra yine de çöz. */
+export function done(anim, ms = 800) {
+  if (!anim || !anim.finished) return Promise.resolve();
+  return Promise.race([anim.finished.catch(() => {}), new Promise((r) => setTimeout(r, ms))]);
 }
 
 /** Çöpe atılırken: eğilip düşerek kaybolur. */
 export function crumble(el) {
   if (!el || !el.animate || reduceMotion()) return Promise.resolve();
-  return el
-    .animate(
-      [
-        { transform: 'none', opacity: 1 },
-        { transform: 'translateY(8px) rotate(-3deg)', opacity: 1, offset: 0.25 },
-        { transform: 'translateY(90px) rotate(14deg) scale(.8)', opacity: 0 },
-      ],
-      { duration: 420, easing: 'cubic-bezier(.5,0,.8,.4)', fill: 'forwards' },
-    )
-    .finished.catch(() => {});
+  const anim = el.animate(
+    [
+      { transform: 'none', opacity: 1 },
+      { transform: 'translateY(8px) rotate(-3deg)', opacity: 1, offset: 0.25 },
+      { transform: 'translateY(90px) rotate(14deg) scale(.8)', opacity: 0 },
+    ],
+    { duration: 420, easing: 'cubic-bezier(.5,0,.8,.4)', fill: 'forwards' },
+  );
+  return done(anim, 700);
 }

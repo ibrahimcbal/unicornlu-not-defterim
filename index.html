@@ -66,10 +66,11 @@
         <span class="grow"></span>
         <button class="ib" id="edPin" type="button" aria-label="Sabitle"><span data-icon="pin"></span></button>
         <button class="ib" id="edType" type="button" aria-label="Liste ve metin arasında geç"><span data-icon="list"></span></button>
-        <button class="ib" id="edColor" type="button" aria-label="Renk"><span data-icon="drop"></span></button>
-        <button class="ib" id="edSize" type="button" aria-label="Tuğla boyutu"><span data-icon="grid"></span></button>
+        <button class="ib" id="edColor" type="button" aria-label="Renk" aria-haspopup="true" aria-expanded="false"><span data-icon="drop"></span></button>
+        <button class="ib" id="edSize" type="button" aria-label="Tuğla boyutu" aria-haspopup="true" aria-expanded="false"><span data-icon="grid"></span></button>
         <button class="ib" id="edTrash" type="button" aria-label="Çöpe at"><span data-icon="trash"></span></button>
       </header>
+      <div class="pop" id="pop" role="group" aria-label="Seçenekler" hidden></div>
       <div class="ed-paper" id="edPaper">
         <div class="ed-scroll" id="edScroll">
           <input id="edTitle" class="ed-title" type="text" placeholder="Başlık" autocomplete="off" enterkeyhint="next" maxlength="200" aria-label="Başlık">
@@ -85,7 +86,6 @@
           </span>
         </footer>
       </div>
-      <div class="pop" id="pop" hidden></div>
     </section>
   </div>
 

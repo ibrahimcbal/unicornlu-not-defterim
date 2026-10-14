@@ -2,7 +2,7 @@
 
 export const COLORS = [
   { key: 'yellow', name: 'Sarı', hex: '#FFC914' },
-  { key: 'red', name: 'Kırmızı', hex: '#E5453D' },
+  { key: 'red', name: 'Kırmızı', hex: '#D2362F' },
   { key: 'orange', name: 'Turuncu', hex: '#FF8A1F' },
   { key: 'lime', name: 'Limon', hex: '#A8D32C' },
   { key: 'green', name: 'Yeşil', hex: '#18A058' },
@@ -57,10 +57,11 @@ export function injectPaletteCss() {
     const b = c.hex;
     const bd = mix(b, '#000000', 0.26);
     const bl = mix(b, '#FFFFFF', 0.38);
+    const bb = mix(b, '#000000', 0.42);
     const ink = inkFor(b);
     const tintLight = mix(b, '#FFFFFF', 0.86);
     const tintDark = mix(b, '#171b22', 0.86);
-    css += `.c-${c.key}{--b:${b};--bd:${bd};--bl:${bl};--bi:${ink};--bt:${tintLight};--bti:#1d2330}\n`;
+    css += `.c-${c.key}{--b:${b};--bd:${bd};--bl:${bl};--bb:${bb};--bi:${ink};--bt:${tintLight};--bti:#1d2330}\n`;
     css += `:root[data-scheme=dark] .c-${c.key}{--bt:${tintDark};--bti:#eef1f6}\n`;
   }
   const el = document.createElement('style');

@@ -13,7 +13,7 @@ const $ = (id) => document.getElementById(id);
 const els = {};
 let store;
 let sync;
-let prefs = { scheme: 'auto', plate: 'gray', sound: false, sort: 'updated', textSize: 'm', font: 'round' };
+let prefs = { scheme: 'auto', plate: 'gray', sound: false, sort: 'updated', textSize: 'm', font: 'round', shortcuts: true };
 const ui = { filter: 'all', query: '', cols: 4, cell: 90, cards: new Map(), firstRender: true, quiet: new Set(), renderQueued: false, sheetKind: null };
 const ed = { id: null, fresh: false, patch: null, timer: 0, items: [], pop: null, closing: false };
 let sheetOpen = false;
@@ -105,7 +105,36 @@ function rememberFocus() {
 function restoreFocus() {
   const el = returnFocusTo;
   returnFocusTo = null;
-  if (el && el.isConnected && typeof el.focus === 'function') { try { el.focus({ preventScroll: true }); } catch {} }
+  // Eski öğe artık yoksa (ör. çöpe atılan kart) ilk karta ya da "yeni not" düğmesine dön.
+  const target = el && el.isConnected ? el : document.querySelector('.brick') || els.fabNew;
+  if (target && typeof target.focus === 'function') { try { target.focus({ preventScroll: true }); } catch {} }
+}
+
+function focusKeyOf(el) {
+  return el && el.tagName ? el.tagName + '|' + (el.getAttribute('aria-label') || el.textContent.trim()) : null;
+}
+function refocus(root, key) {
+  if (!key) return;
+  for (const c of root.querySelectorAll('button, a, input, textarea')) {
+    if (focusKeyOf(c) === key) { try { c.focus({ preventScroll: true }); } catch {} return; }
+  }
+}
+
+/** Tab, açık iletişim kutusunun içinde dönsün. */
+function trapTab(e) {
+  if (e.key !== 'Tab') return;
+  const box = ed.id ? els.ed : sheetOpen ? els.sheetPanel : null;
+  if (!box) return;
+  const items = [...box.querySelectorAll('button, input, textarea, a[href], [tabindex="0"]')].filter(
+    (n) => !n.disabled && !n.closest('[hidden]') && n.offsetParent !== null,
+  );
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const a = document.activeElement;
+  if (!box.contains(a)) { e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && a === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
 }
 
 // ------------------------------------------------------------------ bildirim
@@ -135,10 +164,11 @@ function buildChips() {
       class: 'chip ' + (cls || ''),
       'aria-pressed': String(ui.filter === key),
       'aria-label': label,
+      title: label,
       dataset: { f: key },
       onclick: () => setFilter(ui.filter === key && key !== 'all' ? 'all' : key),
     }, content);
-  els.chips.append(mk('all', 'Hepsi', '', 'Tüm notlar'));
+  els.chips.append(mk('all', 'Hepsi', '', 'Hepsi'));
   for (const c of COLORS) els.chips.append(mk(c.key, null, 'dot c-' + c.key, c.name));
   els.chips.append(mk('trash', [icon('trash', 18), 'Çöp'], '', 'Çöp kutusu'));
 }
@@ -248,11 +278,11 @@ function fillCard(el, n, d) {
     );
   }
   el.append(quick);
-  el.setAttribute('aria-label', (title || 'Adsız not') + (n.type === 'list' ? ', liste' : ''));
+  el.setAttribute('aria-label', (title || 'Adsız not') + (n.type === 'list' ? ', liste' : '') + (inTrash ? '' : '. Düzenlemek için Enter'));
 }
 
 function makeCard(id) {
-  const el = h('article', { class: 'brick', tabindex: '0', role: 'button', dataset: { id } });
+  const el = h('article', { class: 'brick', tabindex: '0', dataset: { id } });
   el.addEventListener('click', () => {
     if (ui.filter === 'trash') return;
     openEditor(id);
@@ -537,8 +567,9 @@ function removeItem(id, focusPrev) {
   if (idx < 0) return;
   ed.items.splice(idx, 1);
   if (!ed.items.length) ed.items.push({ id: newItemId(), t: '', d: false });
-  const target = focusPrev ? ed.items[Math.max(0, idx - 1)].id : null;
-  renderList(target);
+  const neighbor = focusPrev ? ed.items[Math.max(0, idx - 1)] : ed.items[Math.min(idx, ed.items.length - 1)];
+  // Dokunmatik cihazda klavye açılmasın diye yalnızca klavye/fare ile odaklanır.
+  renderList(focusPrev || finePointer() ? neighbor.id : null);
   queueSave({ items: listItemsForSave() });
 }
 
@@ -546,6 +577,8 @@ function clearDone() {
   ed.items = ed.items.filter((i) => !i.d);
   if (!ed.items.length) ed.items.push({ id: newItemId(), t: '', d: false });
   renderList();
+  const addBtn = els.edList.querySelector('.li-add');
+  if (addBtn) addBtn.focus({ preventScroll: true });
   queueSave({ items: listItemsForSave() });
   fx.snap(0.8);
 }
@@ -577,11 +610,14 @@ function convertType() {
 
 function closePopover() {
   if (!ed.pop) return;
+  const hadFocus = els.pop.contains(document.activeElement);
+  const trigger = ed.pop === 'color' ? els.edColor : els.edSize;
   ed.pop = null;
   els.pop.hidden = true;
   clear(els.pop);
-  els.edColor.setAttribute('aria-pressed', 'false');
-  els.edSize.setAttribute('aria-pressed', 'false');
+  els.edColor.setAttribute('aria-expanded', 'false');
+  els.edSize.setAttribute('aria-expanded', 'false');
+  if (hadFocus) trigger.focus({ preventScroll: true });
 }
 
 function openPopover(kind) {
@@ -612,7 +648,7 @@ function openPopover(kind) {
       }, colorKey(n.color) === c.key ? icon('check', 16) : null));
     }
     els.pop.append(g);
-    els.edColor.setAttribute('aria-pressed', 'true');
+    els.edColor.setAttribute('aria-expanded', 'true');
   } else {
     els.pop.append(h('h4', null, 'Tuğla boyutu (genişlik × yükseklik)'));
     const g = h('div', { class: 'sizes' });
@@ -627,7 +663,6 @@ function openPopover(kind) {
       }
       g.append(h('button', {
         type: 'button', class: 'size-opt', 'aria-pressed': String(cur === s),
-        'aria-label': s === 'auto' ? 'Otomatik boyut' : s.replace('x', ' çarpı '),
         onclick: () => {
           flushSave();
           store.edit(ed.id, { size: s });
@@ -637,9 +672,11 @@ function openPopover(kind) {
       }, mini, s === 'auto' ? 'Otomatik' : s.replace('x', '×')));
     }
     els.pop.append(g);
-    els.edSize.setAttribute('aria-pressed', 'true');
+    els.edSize.setAttribute('aria-expanded', 'true');
   }
   els.pop.hidden = false;
+  const firstBtn = els.pop.querySelector('button[aria-pressed="true"]') || els.pop.querySelector('button');
+  if (firstBtn) firstBtn.focus({ preventScroll: true });
 }
 
 function syncViewport() {
@@ -693,7 +730,7 @@ function openEditor(id, { fromRect = null, fresh = false } = {}) {
   if (els.edBackdrop.animate) els.edBackdrop.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, fill: 'backwards' });
   if (els.edPaper.animate && fx.motionOK()) els.edPaper.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, delay: 140, fill: 'backwards' });
   fx.snap(0.8);
-  requestAnimationFrame(() => {
+  setTimeout(() => {
     if (n.type === 'text') autosize(els.edBody);
     els.edList.querySelectorAll('textarea').forEach(autosize);
     let focused = false;
@@ -710,13 +747,19 @@ function openEditor(id, { fromRect = null, fresh = false } = {}) {
       } else focused = false;
     }
     if (!focused) els.edBack.focus({ preventScroll: true });
-  });
+  }, 40);
 }
 
 function requestCloseEditor() {
-  if (!ed.id || ed.closing) return;
-  if (history.state && history.state.ed) history.back();
-  else closeEditorAnimated();
+  // Çift dokunuşta ikinci history.back() uygulamadan çıkarmasın.
+  if (!ed.id || ed.closing || ed.closeRequested) return;
+  ed.closeRequested = true;
+  if (history.state && history.state.ed) {
+    history.back();
+    // popstate gelmezse (nadir) yine de kapat.
+    const id = ed.id;
+    setTimeout(() => { if (ed.id === id && !ed.closing) closeEditorAnimated(); }, 700);
+  } else closeEditorAnimated();
 }
 
 async function closeEditorAnimated() {
@@ -760,6 +803,7 @@ async function closeEditorAnimated() {
   if (typeof ed.scrollY === 'number' && Math.abs(window.scrollY - ed.scrollY) > 1) window.scrollTo(0, ed.scrollY);
   ed.id = null;
   ed.closing = false;
+  ed.closeRequested = false;
   ed.fresh = false;
 }
 
@@ -826,7 +870,7 @@ function openSheet(title, content, kind) {
   els.sheet.hidden = false;
   lockScroll(true);
   syncViewport();
-  requestAnimationFrame(() => els.sheetClose.focus({ preventScroll: true }));
+  setTimeout(() => els.sheetClose.focus({ preventScroll: true }), 40);
   try { history.pushState({ sheet: 1 }, ''); } catch {}
   if (fx.motionOK() && els.sheetPanel.animate) {
     const small = window.matchMedia('(min-width: 700px)').matches;
@@ -842,9 +886,12 @@ function openSheet(title, content, kind) {
 }
 
 function requestCloseSheet() {
-  if (!sheetOpen) return;
-  if (history.state && history.state.sheet) history.back();
-  else closeSheetAnimated();
+  if (!sheetOpen || ui.sheetCloseRequested) return;
+  ui.sheetCloseRequested = true;
+  if (history.state && history.state.sheet) {
+    history.back();
+    setTimeout(() => { if (sheetOpen) closeSheetAnimated(); }, 700);
+  } else closeSheetAnimated();
 }
 
 async function closeSheetAnimated() {
@@ -868,6 +915,7 @@ function closeSheetNow() {
   els.sheet.hidden = true;
   for (const e of [els.sheetPanel, els.sheetBackdrop]) e.getAnimations && e.getAnimations().forEach((a) => a.cancel());
   ui.sheetKind = null;
+  ui.sheetCloseRequested = false;
   els.sheet.style.top = els.sheet.style.height = els.sheet.style.bottom = '';
   if (!ed.id) { lockScroll(false); setBackgroundInert(false); restoreFocus(); }
 }
@@ -892,7 +940,7 @@ function onSyncStatus(s) {
   const b = els.syncBtn;
   if (b.dataset.state !== state) {
     b.dataset.state = state;
-    const name = state === 'offline' ? 'cloudoff' : state === 'syncing' ? 'sync' : state === 'auth' || state === 'error' ? 'warn' : 'cloud';
+    const name = state === 'offline' ? 'cloudoff' : state === 'syncing' ? 'sync' : state === 'auth' || state === 'error' ? 'warn' : state === 'ok' ? 'cloudok' : 'cloud';
     const holder = b.querySelector('[data-icon]');
     holder.dataset.icon = name;
     clear(holder).append(icon(name));
@@ -927,6 +975,7 @@ function seg(options, current, onPick) {
 
 function renderSettings() {
   const scroll = els.sheetBody.scrollTop;
+  const fk = els.sheetBody.contains(document.activeElement) ? focusKeyOf(document.activeElement) : null;
   const root = h('div');
   const cfg = sync.config;
 
@@ -981,6 +1030,12 @@ function renderSettings() {
   );
   look.append(h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Taban plakası', h('span', { class: 'sub' }, 'Tuğlaların oturduğu zemin')), plates));
   look.append(h('div', { class: 'row' },
+    h('span', { class: 'lbl' }, 'Klavye kısayolları', h('span', { class: 'sub' }, 'n yeni not, l yeni liste, / ara')),
+    h('button', {
+      type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(prefs.shortcuts !== false), 'aria-label': 'Klavye kısayolları',
+      onclick: () => { prefs.shortcuts = prefs.shortcuts === false; savePrefs(); renderSettings(); },
+    })));
+  look.append(h('div', { class: 'row' },
     h('span', { class: 'lbl' }, 'Tuk sesi', h('span', { class: 'sub' }, 'Tuğla yerine oturunca hafif bir tık')),
     h('button', {
       type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(prefs.sound), 'aria-label': 'Tuk sesi',
@@ -1019,6 +1074,7 @@ function renderSettings() {
 
   clear(els.sheetBody).append(root);
   els.sheetBody.scrollTop = scroll;
+  refocus(els.sheetBody, fk);
 }
 
 function openSettings() {
@@ -1140,7 +1196,10 @@ async function doInstall() {
 
 function openWizard(step) {
   const host = h('div');
-  const show = (node) => clear(host).append(node);
+  const show = (node, focus = true) => {
+    clear(host).append(node);
+    if (focus) requestAnimationFrame(() => { const f = host.querySelector('input, button, a'); if (f) f.focus({ preventScroll: true }); });
+  };
   const wasOpen = sheetOpen;
   const repoDefault = (sync.config && sync.config.repo) || DEFAULT_REPO;
 
@@ -1159,7 +1218,7 @@ function openWizard(step) {
     const tokenIn = h('input', { type: 'text', class: 'secret', id: 'w-token', placeholder: 'github_pat_… ya da UNB1.… kurulum kodu', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
     const repoIn = h('input', { type: 'text', id: 'w-repo', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
     repoIn.value = repoDefault;
-    const msg = h('div');
+    const msg = h('div', { role: 'alert' });
     const btn = h('button', { class: 'btn primary block', type: 'button' }, 'Bağlan');
     const go = async () => {
       let token = tokenIn.value.trim();
@@ -1178,6 +1237,7 @@ function openWizard(step) {
         if (!ok) return;
       }
       btn.setAttribute('disabled', '');
+      btn.setAttribute('aria-busy', 'true');
       btn.textContent = 'Bağlanıyor…';
       clear(msg);
       try {
@@ -1186,6 +1246,7 @@ function openWizard(step) {
       } catch (e) {
         clear(msg).append(h('div', { class: 'note bad' }, e && e.message ? e.message : 'Bağlanılamadı.'));
         btn.removeAttribute('disabled');
+        btn.removeAttribute('aria-busy');
         btn.textContent = 'Bağlan';
       }
     };
@@ -1244,7 +1305,7 @@ function openWizard(step) {
     );
   };
 
-  show(step === 'token' ? tokenStep() : welcome());
+  show(step === 'token' ? tokenStep() : welcome(), false);
   if (wasOpen && ui.sheetKind === 'settings') {
     // ayarlardan geldiyse aynı sayfada içeriği değiştir
     els.sheetTitle.textContent = 'Eşitleme kurulumu';
@@ -1343,7 +1404,7 @@ function wire() {
       if (document.activeElement === els.q) { els.q.value = ''; ui.query = ''; els.qClear.hidden = true; els.q.blur(); render(); }
       return;
     }
-    if (typing || e.ctrlKey || e.metaKey || e.altKey || ed.id || sheetOpen) return;
+    if (typing || e.ctrlKey || e.metaKey || e.altKey || ed.id || sheetOpen || prefs.shortcuts === false) return;
     if (e.key === 'n') { e.preventDefault(); createNote('text'); }
     else if (e.key === 'l') { e.preventDefault(); createNote('list'); }
     else if (e.key === '/') { e.preventDefault(); els.top.classList.add('searching'); els.q.focus(); }
@@ -1351,6 +1412,7 @@ function wire() {
   document.addEventListener('keydown', (e) => {
     if (ed.id && (e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); requestCloseEditor(); }
   });
+  document.addEventListener('keydown', trapTab);
 
   window.addEventListener('popstate', () => {
     if (ed.id) closeEditorAnimated();
