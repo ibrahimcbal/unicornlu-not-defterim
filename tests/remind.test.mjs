@@ -68,6 +68,11 @@ test('parsePastedItems: bullets, done markers, numbering only when every line ha
   assert.deepEqual(parsePastedItems('1990. yılında kuruldu\nikinci satır').map((i) => i.t), ['1990. yılında kuruldu', 'ikinci satır']);
 });
 
+test('parsePastedItems: mixed list strips the number, a lone numbered line stays', () => {
+  assert.deepEqual(parsePastedItems('- süt\n- ekmek\n1. yumurta').map((i) => i.t), ['süt', 'ekmek', 'yumurta']);
+  assert.deepEqual(parsePastedItems('3. kat toplantı\nsüt').map((i) => i.t), ['3. kat toplantı', 'süt']);
+});
+
 test('nextOccurrence: monthly keeps the anchor day, far-overdue daily still repeats', () => {
   const anchor = new Date(2030, 0, 31, 9, 0, 0).getTime(); // 31 Ocak 09:00
   const feb = nextOccurrence(anchor, 'monthly', new Date(2030, 0, 31, 10, 0, 0).getTime());

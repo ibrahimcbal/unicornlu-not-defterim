@@ -134,11 +134,14 @@ export function findLinks(text, max = 6) {
  */
 export function parsePastedItems(text) {
   const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const allNumbered = lines.length > 0 && lines.every((l) => /^\d+[.)]\s+\S/.test(l));
+  // "1." yalnızca liste biçimliyse silinir: bütün satırlar numaralıysa ya da en az iki satırda işaret varsa.
+  const marker = /^(?:[-*•▪◦]\s+|\[[ xX]?\]\s+|[☐☑✓]\s+|\d{1,2}[.)]\s+\S)/;
+  const allNumbered = lines.length > 0 && lines.every((l) => /^\d{1,2}[.)]\s+\S/.test(l));
+  const stripNumbers = allNumbered || lines.filter((l) => marker.test(l)).length >= 2;
   return lines.map((raw) => {
     let l = raw;
     let d = false;
-    if (allNumbered) l = l.replace(/^\d+[.)]\s+/, '');
+    if (stripNumbers) l = l.replace(/^\d{1,2}[.)]\s+/, '');
     const m = /^(?:[-*•▪◦]\s+)?(?:\[([ xX]?)\]|([☐☑✓]))\s+/.exec(l);
     if (m) {
       d = (m[1] || '').toLowerCase() === 'x' || m[2] === '☑' || m[2] === '✓';

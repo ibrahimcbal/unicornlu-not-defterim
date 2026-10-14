@@ -971,6 +971,7 @@ function buildFolderPop(n) {
     h('button', {
       type: 'button', class: 'folder-item', 'aria-pressed': String(curId === id), style: { paddingLeft: 10 + depth * 18 + 'px' },
       onclick: () => {
+        if (curId === id) { closePopover(); return; }
         flushSave();
         store.edit(ed.id, { folderId: id }, { touch: false });
         fx.snap();
