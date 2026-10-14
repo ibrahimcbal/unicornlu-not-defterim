@@ -540,3 +540,56 @@ test('r: order-only changes do not touch updatedAt', async () => {
   assert.equal(a.store.get(x.id).updatedAt, t0);
   assert.equal(a.store.get(x.id)._dirty, true);
 });
+
+test('s: a true content conflict keeps the layout (reminder, pin) of both sides merged', async () => {
+  const mock = createMockGitHub();
+  const a = await makeDevice(mock);
+  const x = a.store.create({ title: 'T0', body: 'B0' });
+  await a.engine.syncNow();
+  const b = await makeDevice(mock);
+  // A (offline): başlığı değiştirir. B: gövdeyi değiştirir ve hatırlatıcı kurar.
+  a.store.edit(x.id, { title: 'T1' });
+  b.store.edit(x.id, { body: 'B1' });
+  b.store.edit(x.id, { remindAt: Date.UTC(2031, 0, 1), remindBase: Date.UTC(2031, 0, 1), remindFired: false }, { touch: false });
+  await b.engine.syncNow();
+  await a.engine.syncNow();
+  await b.engine.syncNow();
+  const all = [...a.store.all(), ...b.store.all()];
+  const main = a.store.all().find((n) => n.id === x.id);
+  assert.equal(main.remindAt, Date.UTC(2031, 0, 1), 'reminder lost in conflict');
+  assert.equal(a.store.all().length, 2, 'expected main note + one conflict copy');
+  assert.ok(all.every((n) => !n._purge));
+});
+
+test('t: reminder fields merge as one unit (fired locally vs rescheduled remotely)', async () => {
+  const mock = createMockGitHub();
+  const a = await makeDevice(mock);
+  const x = a.store.create({ title: 'R', body: 'r', remindAt: Date.UTC(2031, 0, 1), remindBase: Date.UTC(2031, 0, 1), remindFired: false });
+  await a.engine.syncNow();
+  const b = await makeDevice(mock);
+  a.store.edit(x.id, { remindFired: true }, { touch: false }); // A'da çaldı (çevrimdışı)
+  b.store.edit(x.id, { remindAt: Date.UTC(2031, 5, 1), remindBase: Date.UTC(2031, 5, 1), remindFired: false }, { touch: false });
+  await b.engine.syncNow();
+  await a.engine.syncNow();
+  const n = a.store.get(x.id);
+  assert.equal(n.remindAt, Date.UTC(2031, 5, 1));
+  assert.equal(n.remindFired, false, 'new reminder was silenced by an old fired flag');
+});
+
+test('u: a purge does not overwrite a note another device restored', async () => {
+  const mock = createMockGitHub();
+  const a = await makeDevice(mock);
+  const x = a.store.create({ title: 'X', body: 'v1' });
+  await a.engine.syncNow();
+  const b = await makeDevice(mock);
+  a.store.trash(x.id);
+  await a.engine.syncNow();
+  await b.engine.syncNow(); // B çöpteki notu görür
+  b.store.restore(x.id);    // B geri yükler (henüz göndermedi)
+  a.store.purge(x.id);      // A kalıcı siler (henüz göndermedi)
+  await b.engine.syncNow(); // B önce gönderir
+  await a.engine.syncNow(); // A'nın silmesi çakışır
+  assert.ok(a.store.get(x.id), 'restored note was deleted on A');
+  assert.equal(a.store.get(x.id).trashedAt, null);
+  assert.equal(remoteNote(mock, x.id).deleted, undefined, 'tombstone overwrote the restored note');
+});

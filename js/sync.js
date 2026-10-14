@@ -364,19 +364,33 @@ export class SyncEngine {
       (cur) => {
         const snap = snapshot(incoming);
         if (!cur) return { ...makeNote(), ...incoming, _sha: sha, _dirty: false, _rev: 0, _purge: false, _syncedAt: t, _base: snap };
-        if (cur._purge) return { ...cur, _sha: sha };
+        if (cur._purge) {
+          // Başka cihaz notu geri yüklemiş/düzenlemiş (çöpte değil): silmeyi bırak, sessizce ezme.
+          if (!incoming.trashedAt) return { ...cur, ...incoming, _purge: false, _sha: sha, _dirty: false, _syncedAt: t, _base: snap };
+          return { ...cur, _sha: sha };
+        }
         if (!cur._dirty) return { ...cur, ...incoming, _sha: sha, _dirty: false, _syncedAt: t, _base: snap };
 
         // Bu cihazda gönderilmemiş değişiklik var: üç yönlü birleştir (temel = son eşitlenen sürüm).
         const base = cur._base;
         const localContentChanged = !base || !sameContent(cur, base);
         const remoteContentChanged = !base || !sameContent(incoming, base);
+        const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+        const RK = ['remindAt', 'remindFired', 'remindRepeat', 'remindBase'];
         const mergeLayout = () => {
           const out = {};
           for (const k of LAYOUT_KEYS) {
-            const localChanged = base ? JSON.stringify(cur[k] ?? null) !== JSON.stringify(base[k] ?? null) : true;
+            if (RK.includes(k)) continue;
+            const localChanged = base ? !eq(cur[k], base[k]) : true;
             out[k] = localChanged ? cur[k] : incoming[k];
           }
+          // Hatırlatıcı alanları tek bütündür: parça parça birleştirilmez.
+          const lc = base ? RK.some((k) => !eq(cur[k], base[k])) : true;
+          const rc = base ? RK.some((k) => !eq(incoming[k], base[k])) : false;
+          let src = incoming;
+          if (lc && !rc) src = cur;
+          else if (lc && rc) src = cur.remindFired && !incoming.remindFired ? incoming : cur; // kurulu olan kazanır
+          for (const k of RK) out[k] = src[k];
           return out;
         };
         const finish = (content, updatedAt) => {
@@ -396,13 +410,16 @@ export class SyncEngine {
           for (const k of ['type', 'title', 'body', 'items', 'trashedAt']) content[k] = incoming[k];
           return finish(content, Math.max(cur.updatedAt || 0, incoming.updatedAt || 0));
         }
-        // Gerçek çakışma: yeni olan asıl not kalır, diğeri kopya olarak saklanır.
+        // Gerçek çakışma: yeni olan asıl not kalır, diğeri kopya olarak saklanır; düzen alanları yine birleşir.
+        const lay = mergeLayout();
         if ((cur.updatedAt || 0) >= (incoming.updatedAt || 0)) {
           copy = this._conflictCopy(incoming);
-          return { ...cur, _sha: sha };
+          return { ...cur, ...lay, _sha: sha };
         }
         copy = this._conflictCopy(cur);
-        return { ...cur, ...incoming, _sha: sha, _dirty: false, _syncedAt: t, _base: snap };
+        const m = { ...cur, ...incoming, ...lay, _sha: sha, _syncedAt: t, _base: snap };
+        m._dirty = !sameLayout(m, incoming);
+        return m;
       },
       { origin: 'sync' },
     );
@@ -424,6 +441,7 @@ export class SyncEngine {
       remindAt: null,
       remindFired: false,
       remindRepeat: 'none',
+      remindBase: null,
       createdAt: t,
       updatedAt: t,
       trashedAt: src.trashedAt ?? null,
@@ -470,6 +488,13 @@ export class SyncEngine {
         if ((e.kind === 'conflict' || e.kind === 'notfound') && attempt < 2) {
           const f = await this._getRemoteFile(cfg, id);
           if (!f) { this.store.mutate(id, () => null, { origin: 'sync' }); return; } // dosya zaten yok
+          const live = f.data && typeof f.data === 'object' && f.data.deleted !== true ? fromRemote(f.data, id) : null;
+          if (live && !live.trashedAt) {
+            // Başka cihaz notu geri yüklemiş/düzenlemiş: silme, sessizce ezme.
+            this.store.mutate(id, (c) => (c ? { ...c, _purge: false } : undefined), { origin: 'sync' });
+            this._applyBlob(id, f.sha, f.data);
+            return;
+          }
           this.store.mutate(id, (c) => (c ? { ...c, _sha: f.sha } : undefined), { origin: 'sync' });
           return this._pushOne(cfg, id, attempt + 1);
         }

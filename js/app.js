@@ -5,7 +5,7 @@ import { COLORS, PLATES, colorKey, injectPaletteCss } from './palette.js';
 import { h, icon, clear, fillIcons } from './dom.js';
 import * as fx from './fx.js';
 import { initArrange } from './arrange.js';
-import { toLocalInput, fromLocalInput, presets, nextOccurrence, dueReminders, buildIcs, findLinks, splitPastedLines } from './remind.js';
+import { toLocalInput, fromLocalInput, presets, nextOccurrence, dueReminders, buildIcs, findLinks, parsePastedItems } from './remind.js';
 
 const VERSION = '1.2.0';
 const DEFAULT_REPO = 'ibrahimcbal/unicornlu-notlar';
@@ -50,7 +50,7 @@ const isMobileLayout = () => window.matchMedia('(max-width: 699px)').matches;
 const finePointer = () => window.matchMedia('(pointer: fine)').matches;
 
 function isEmptyNote(n) {
-  return !n.title.trim() && !n.body.trim() && !(n.items || []).some((i) => i.t.trim());
+  return !n.title.trim() && !n.body.trim() && !(n.items || []).some((i) => i.t.trim()) && !n.remindAt;
 }
 
 function autoSize(n) {
@@ -202,7 +202,22 @@ function validFolderIds() {
 
 /** Notun fiilen bulunduğu klasör (klasör silinmiş/çöpteyse ana sayfa). */
 function effFolder(n, valid) {
-  return n.folderId && n.folderId !== n.id && valid.has(n.folderId) ? n.folderId : null;
+  if (!n.folderId || n.folderId === n.id || !valid.has(n.folderId)) return null;
+  // Eşitleme yarışıyla oluşan klasör döngüsü: döngüdeki klasörler ana sayfada görünsün.
+  if (isFolder(n)) {
+    const seen = new Set([n.id]);
+    let cur = n;
+    for (let i = 0; i < 64; i++) {
+      const p = cur.folderId;
+      if (!p || !valid.has(p)) return n.folderId;
+      if (seen.has(p)) return null;
+      seen.add(p);
+      cur = store.get(p);
+      if (!cur) return n.folderId;
+    }
+    return null;
+  }
+  return n.folderId;
 }
 
 function childCounts() {
@@ -722,7 +737,7 @@ function renderList(focusId) {
 }
 
 function listRow(it) {
-  const ta = h('textarea', { class: 'li-text', rows: '1', placeholder: 'Madde', 'aria-label': 'Madde', enterkeyhint: 'next' });
+  const ta = h('textarea', { class: 'li-text', rows: '1', placeholder: 'Madde', 'aria-label': 'Madde', enterkeyhint: 'next', maxlength: '20000' });
   ta.value = it.t;
   const row = h('div', { class: 'li' + (it.d ? ' done' : ''), dataset: { id: it.id } });
   const cb = h('button', {
@@ -738,21 +753,23 @@ function listRow(it) {
   ta.addEventListener('paste', (e) => {
     const text = e.clipboardData && e.clipboardData.getData('text');
     if (!text || !/\r?\n/.test(text.trim())) return;
-    const lines = splitPastedLines(text);
-    if (lines.length < 2) return;
+    const parsed = parsePastedItems(text);
+    if (parsed.length < 2) return;
     // Çok satırlı yapıştırma: her satır ayrı madde olsun.
     e.preventDefault();
     const idx = ed.items.findIndex((i) => i.id === it.id);
+    const total = parsed.length;
     if (!ta.value.trim()) {
-      it.t = lines[0];
-      lines.shift();
+      const first = parsed.shift();
+      it.t = first.t;
+      it.d = first.d;
     }
-    const fresh = lines.map((t) => ({ id: newItemId(), t, d: false }));
+    const fresh = parsed.map((p) => ({ id: newItemId(), t: p.t, d: p.d }));
     ed.items.splice(idx + 1, 0, ...fresh);
     renderList(fresh.length ? fresh[fresh.length - 1].id : it.id);
     queueSave({ items: listItemsForSave() });
     renderLinks();
-    toast(`${lines.length + (ta.value.trim() ? 0 : 1)} madde eklendi.`, { ms: 2500 });
+    toast(total + ' madde eklendi.', { ms: 2500 });
   });
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -1679,7 +1696,7 @@ function setReminder(ts, repeat) {
   if (ts < Date.now() + 5000) { toast('Geçmiş bir zaman seçtin. İleri bir tarih ve saat seç.'); return; }
   const permP = ensureNotifyPermission(); // izin penceresi kullanıcı hareketi içinde açılmalı
   flushSave();
-  store.edit(ed.id, { remindAt: ts, remindFired: false, remindRepeat: repeat || 'none' }, { touch: false });
+  store.edit(ed.id, { remindAt: ts, remindBase: ts, remindFired: false, remindRepeat: repeat || 'none' }, { touch: false });
   closePopover();
   updateRemindBtn();
   updateEdInfo();
@@ -1693,7 +1710,7 @@ function setReminder(ts, repeat) {
 
 function clearReminder() {
   flushSave();
-  store.edit(ed.id, { remindAt: null, remindFired: false, remindRepeat: 'none' }, { touch: false });
+  store.edit(ed.id, { remindAt: null, remindBase: null, remindFired: false, remindRepeat: 'none' }, { touch: false });
   closePopover();
   updateRemindBtn();
   updateEdInfo();
@@ -1733,6 +1750,13 @@ function snooze(id, minutes) {
   toast(`${minutes} dk sonra tekrar hatırlatılacak.`);
 }
 
+function agoText(ms) {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  if (m < 60) return m + ' dk önce';
+  if (m < 1440) return Math.round(m / 60) + ' sa önce';
+  return Math.round(m / 1440) + ' gün önce';
+}
+
 function ring(n, lateMs) {
   const title = n.title.trim() || (n.type === 'list' ? 'Liste' : 'Not');
   const late = lateMs > 120_000;
@@ -1743,7 +1767,7 @@ function ring(n, lateMs) {
   const item = h('div', { class: 'tray-item c-' + colorKey(n.color), role: 'alert' },
     h('div', { class: 'tray-main' },
       icon('bell', 20),
-      h('div', { class: 'tray-text' }, h('b', null, title), h('span', null, late ? Math.max(1, Math.round(lateMs / 60_000)) + ' dk önce çalmalıydı' : 'Şimdi'))),
+      h('div', { class: 'tray-text' }, h('b', null, title), h('span', null, late ? agoText(lateMs) + ' çalmalıydı' : 'Şimdi'))),
     h('div', { class: 'tray-actions' },
       h('button', { type: 'button', onclick: () => { dismissRing(n.id); openCard(n.id); } }, 'Aç'),
       h('button', { type: 'button', onclick: () => snooze(n.id, 10) }, '10 dk ertele'),
@@ -1756,7 +1780,8 @@ function checkReminders() {
   if (!store) return;
   const now = Date.now();
   for (const n of dueReminders(store.all(), now)) {
-    const next = nextOccurrence(n.remindAt, n.remindRepeat, now);
+    // Tekrar hep asıl çapadan hesaplanır; ertelemek programı kaydırmaz.
+    const next = nextOccurrence(n.remindBase || n.remindAt, n.remindRepeat, now);
     if (next) store.edit(n.id, { remindAt: next, remindFired: false }, { touch: false });
     else store.edit(n.id, { remindFired: true }, { touch: false });
     ring(n, now - n.remindAt);

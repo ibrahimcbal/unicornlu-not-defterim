@@ -45,6 +45,7 @@ export function makeNote(partial = {}) {
     remindAt: null,          // hatırlatıcı zamanı (ms)
     remindFired: false,      // hatırlatıcı çaldı mı
     remindRepeat: 'none',    // 'none' | 'daily' | 'weekly' | 'monthly'
+    remindBase: null,        // tekrarlı hatırlatıcının asıl zamanı (erteleme bunu kaydırmaz)
     createdAt: now,
     updatedAt: now,
     trashedAt: null,
@@ -74,6 +75,7 @@ export function toRemote(n) {
     remindAt: typeof n.remindAt === 'number' ? n.remindAt : null,
     remindFired: !!n.remindFired,
     remindRepeat: n.remindRepeat || 'none',
+    remindBase: typeof n.remindBase === 'number' ? n.remindBase : null,
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
     trashedAt: n.trashedAt ?? null,
@@ -86,9 +88,9 @@ export function fromRemote(raw, id) {
   const type = raw.type === 'list' ? 'list' : raw.type === 'folder' ? 'folder' : 'text';
   const items = Array.isArray(raw.items)
     ? raw.items
-        .slice(0, 2000)
+        .slice(0, 20000)
         .filter((i) => i && typeof i === 'object')
-        .map((i) => ({ id: String(i.id || newItemId()).slice(0, 40), t: String(i.t ?? '').slice(0, 2000), d: !!i.d }))
+        .map((i) => ({ id: String(i.id || newItemId()).slice(0, 40), t: String(i.t ?? '').slice(0, 100000), d: !!i.d }))
     : [];
   const ps = parseSize(raw.size);
   const size = ps ? ps.w + 'x' + ps.h : 'auto';
@@ -96,8 +98,8 @@ export function fromRemote(raw, id) {
   return {
     id,
     type,
-    title: String(raw.title ?? '').slice(0, 500),
-    body: String(raw.body ?? '').slice(0, 300000),
+    title: String(raw.title ?? '').slice(0, 5000),
+    body: String(raw.body ?? '').slice(0, 2000000),
     items,
     color: String(raw.color || 'yellow'),
     size,
@@ -107,6 +109,7 @@ export function fromRemote(raw, id) {
     remindAt: raw.remindAt == null ? null : num(raw.remindAt, null),
     remindFired: !!raw.remindFired,
     remindRepeat: ['daily', 'weekly', 'monthly'].includes(raw.remindRepeat) ? raw.remindRepeat : 'none',
+    remindBase: raw.remindBase == null ? null : num(raw.remindBase, null),
     createdAt: num(raw.createdAt, Date.now()),
     updatedAt: num(raw.updatedAt, Date.now()),
     trashedAt: raw.trashedAt == null ? null : num(raw.trashedAt, Date.now()),
@@ -125,7 +128,7 @@ export function sameContent(a, b) {
 }
 
 export const CONTENT_KEYS = ['type', 'title', 'body', 'items', 'trashedAt'];
-export const LAYOUT_KEYS = ['color', 'size', 'pinned', 'folderId', 'order', 'remindAt', 'remindFired', 'remindRepeat'];
+export const LAYOUT_KEYS = ['color', 'size', 'pinned', 'folderId', 'order', 'remindAt', 'remindFired', 'remindRepeat', 'remindBase'];
 
 /** Son eşitlenen uzak durumun anlık görüntüsü (üç yönlü birleştirme için). */
 export function snapshot(n) {
@@ -143,6 +146,7 @@ export function snapshot(n) {
     remindAt: n.remindAt ?? null,
     remindFired: !!n.remindFired,
     remindRepeat: n.remindRepeat || 'none',
+    remindBase: n.remindBase ?? null,
   };
 }
 
@@ -156,7 +160,8 @@ export function sameLayout(a, b) {
     (a.order ?? null) === (b.order ?? null) &&
     (a.remindAt ?? null) === (b.remindAt ?? null) &&
     !!a.remindFired === !!b.remindFired &&
-    (a.remindRepeat || 'none') === (b.remindRepeat || 'none')
+    (a.remindRepeat || 'none') === (b.remindRepeat || 'none') &&
+    (a.remindBase ?? null) === (b.remindBase ?? null)
   );
 }
 

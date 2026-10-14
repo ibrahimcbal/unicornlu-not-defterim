@@ -33,18 +33,29 @@ export function presets(now = Date.now()) {
   return out;
 }
 
-/** Tekrarlı hatırlatıcının bir sonraki zamanı (now'dan sonra olana kadar ilerler). */
+/**
+ * Tekrarlı hatırlatıcının, now'dan sonraki ilk zamanı. `ts` asıl (çapa) zamandır:
+ * her seferinde çapadan hesaplanır, bu yüzden aylık tekrar kaymaz (31'i → ayın son günü).
+ */
 export function nextOccurrence(ts, repeat, now = Date.now()) {
-  if (!['daily', 'weekly', 'monthly'].includes(repeat)) return null;
-  let t = ts;
-  for (let i = 0; i < 1000 && t <= now; i++) {
-    const d = new Date(t);
-    if (repeat === 'daily') d.setDate(d.getDate() + 1);
-    else if (repeat === 'weekly') d.setDate(d.getDate() + 7);
-    else d.setMonth(d.getMonth() + 1);
-    t = d.getTime();
+  if (!['daily', 'weekly', 'monthly'].includes(repeat) || !Number.isFinite(ts)) return null;
+  if (ts > now) return ts;
+  const a = new Date(ts);
+  if (repeat === 'daily' || repeat === 'weekly') {
+    const step = repeat === 'daily' ? 1 : 7;
+    const d = new Date(a);
+    d.setDate(d.getDate() + Math.floor((now - ts) / 86_400_000 / step) * step);
+    for (let i = 0; i < 20 && d.getTime() <= now; i++) d.setDate(d.getDate() + step);
+    return d.getTime() > now ? d.getTime() : null;
   }
-  return t > now ? t : null;
+  const n = new Date(now);
+  let k = Math.max(0, (n.getFullYear() - a.getFullYear()) * 12 + n.getMonth() - a.getMonth() - 1);
+  for (let i = 0; i < 40; i++, k++) {
+    const dim = new Date(a.getFullYear(), a.getMonth() + k + 1, 0).getDate();
+    const c = new Date(a.getFullYear(), a.getMonth() + k, Math.min(a.getDate(), dim), a.getHours(), a.getMinutes(), 0, 0);
+    if (c.getTime() > now) return c.getTime();
+  }
+  return null;
 }
 
 /** Çalması gereken (zamanı gelmiş, çalmamış, çöpte olmayan) notlar. */
@@ -116,10 +127,29 @@ export function findLinks(text, max = 6) {
   return out;
 }
 
-/** Yapıştırılan çok satırlı metni liste maddelerine ayırır (madde işaretlerini temizler). */
+/**
+ * Yapıştırılan çok satırlı metni liste maddelerine ayırır.
+ * Madde işaretleri temizlenir; [x] / ☑ / ✓ işaretliler tamamlanmış sayılır;
+ * "1." numaraları yalnızca bütün satırlarda varsa silinir ("1990. yılında…" bozulmasın).
+ */
+export function parsePastedItems(text) {
+  const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const allNumbered = lines.length > 0 && lines.every((l) => /^\d+[.)]\s+\S/.test(l));
+  return lines.map((raw) => {
+    let l = raw;
+    let d = false;
+    if (allNumbered) l = l.replace(/^\d+[.)]\s+/, '');
+    const m = /^(?:[-*•▪◦]\s+)?(?:\[([ xX]?)\]|([☐☑✓]))\s+/.exec(l);
+    if (m) {
+      d = (m[1] || '').toLowerCase() === 'x' || m[2] === '☑' || m[2] === '✓';
+      l = l.slice(m[0].length);
+    } else {
+      l = l.replace(/^[-*•▪◦]\s+/, '');
+    }
+    return { t: l.trim(), d };
+  }).filter((i) => i.t);
+}
+
 export function splitPastedLines(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .map((l) => l.replace(/^\s*(?:[-*•▪◦]|\d+[.)]|\[[ xX]?\]|[☐☑✓])\s+/, '').trim())
-    .filter(Boolean);
+  return parsePastedItems(text).map((i) => i.t);
 }

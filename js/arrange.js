@@ -20,6 +20,9 @@ export function initArrange(o) {
   window.addEventListener('pointermove', onMove, { passive: true });
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onCancelEvent);
+  // Pencere odağını kaybederse ya da gizlenirse yarım kalan sürüklemeyi bırak.
+  window.addEventListener('blur', () => cancel());
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cancel(); });
 
   function onDown(e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -57,11 +60,17 @@ export function initArrange(o) {
       }
     }
     if (!drag || e.pointerId !== drag.pointerId) return;
-    if (drag.kind === 'move') moveDrag(e);
-    else resizeDrag(e);
+    if (drag.kind === 'move') {
+      drag.lastX = e.clientX;
+      drag.lastY = e.clientY;
+      drag.ghost.style.left = e.clientX - drag.ox + 'px';
+      drag.ghost.style.top = e.clientY - drag.oy + 'px';
+      hitTest();
+    } else resizeDrag(e);
   }
 
   function beginMove(card, e) {
+    if (drag) cancel(); // ikinci parmak/ikinci sürükleme: öncekini temiz bırak
     const rect = card.getBoundingClientRect();
     const ghost = card.cloneNode(true);
     ghost.classList.add('ghost');
@@ -79,7 +88,8 @@ export function initArrange(o) {
     drag = {
       kind: 'move', card, ghost, pointerId: e.pointerId,
       ox: e.clientX - rect.left, oy: e.clientY - rect.top,
-      lastTarget: null, into: null, lastY: e.clientY, raf: 0,
+      startIndex: [...grid.children].indexOf(card),
+      lastTarget: null, into: null, lastX: e.clientX, lastY: e.clientY, raf: 0,
     };
     if (o.onDragStart) o.onDragStart();
     fx.buzz(10);
@@ -90,12 +100,11 @@ export function initArrange(o) {
     document.querySelectorAll('.drop-target').forEach((n) => n.classList.remove('drop-target'));
   }
 
-  function moveDrag(e) {
+  /** İşaretçinin altındaki hedefe göre: klasöre bırak / sıra değiştir. */
+  function hitTest() {
     const d = drag;
-    d.ghost.style.left = e.clientX - d.ox + 'px';
-    d.ghost.style.top = e.clientY - d.oy + 'px';
-    d.lastY = e.clientY;
-    const stack = document.elementsFromPoint(e.clientX, e.clientY);
+    if (!d || d.kind !== 'move') return;
+    const stack = document.elementsFromPoint(d.lastX, d.lastY);
     clearHighlights();
     const crumb = stack.find((n) => n.classList && n.classList.contains('crumb') && n.dataset.drop !== undefined);
     if (crumb) {
@@ -107,8 +116,8 @@ export function initArrange(o) {
     if (target && o.isFolderCard(target)) {
       const r = target.getBoundingClientRect();
       const inner =
-        e.clientX > r.left + r.width * 0.2 && e.clientX < r.right - r.width * 0.2 &&
-        e.clientY > r.top + r.height * 0.2 && e.clientY < r.bottom - r.height * 0.2;
+        d.lastX > r.left + r.width * 0.2 && d.lastX < r.right - r.width * 0.2 &&
+        d.lastY > r.top + r.height * 0.2 && d.lastY < r.bottom - r.height * 0.2;
       if (inner) {
         d.into = { folder: target.dataset.id };
         target.classList.add('drop-target');
@@ -130,6 +139,7 @@ export function initArrange(o) {
   }
 
   function beginResize(card, e) {
+    if (drag) cancel();
     const dims = o.getDims(card);
     drag = { kind: 'size', card, pointerId: e.pointerId, w: dims.w, h: dims.h, startW: dims.w, startH: dims.h };
     card.classList.add('resizing');
@@ -162,7 +172,10 @@ export function initArrange(o) {
     let dy = 0;
     if (y < 90) dy = -Math.ceil((90 - y) / 5);
     else if (y > vh - 90) dy = Math.ceil((y - (vh - 90)) / 5);
-    if (dy) window.scrollBy(0, dy);
+    if (dy) {
+      window.scrollBy(0, dy);
+      hitTest(); // sayfa kayınca imlecin altındaki hedef değişir
+    }
     drag.raf = requestAnimationFrame(loop);
   }
 
@@ -180,6 +193,13 @@ export function initArrange(o) {
     return d;
   }
 
+  function cancel() {
+    if (!drag) return;
+    const d = finish();
+    if (d && d.kind === 'size') o.setDims(d.card, d.startW, d.startH);
+    if (o.onCancel) o.onCancel();
+  }
+
   function onUp(e) {
     if (press) {
       clearTimeout(press.timer);
@@ -192,12 +212,18 @@ export function initArrange(o) {
       if (d.w !== d.startW || d.h !== d.startH) o.onResize(id, d.w, d.h);
       return;
     }
-    if (d.into) o.onDropInto(id, d.into.folder);
-    else {
-      const prev = d.card.previousElementSibling;
-      const next = d.card.nextElementSibling;
-      o.onReorder(id, prev ? prev.dataset.id : null, next ? next.dataset.id : null);
+    if (d.into) {
+      o.onDropInto(id, d.into.folder);
+      return;
     }
+    // Yerinde bırakıldıysa hiçbir şey kaydetme.
+    if ([...grid.children].indexOf(d.card) === d.startIndex) {
+      if (o.onCancel) o.onCancel();
+      return;
+    }
+    const prev = d.card.previousElementSibling;
+    const next = d.card.nextElementSibling;
+    o.onReorder(id, prev ? prev.dataset.id : null, next ? next.dataset.id : null);
   }
 
   function onCancelEvent(e) {
@@ -206,20 +232,13 @@ export function initArrange(o) {
       press = null;
     }
     if (!drag || e.pointerId !== drag.pointerId) return;
-    const d = finish();
-    if (d && d.kind === 'size') o.setDims(d.card, d.startW, d.startH);
-    if (o.onCancel) o.onCancel();
+    cancel();
   }
 
   return {
     /** Az önce sürükleme/uzun basma olduysa true: ardından gelen "click" yok sayılmalı. */
     justActed: () => performance.now() < suppressUntil,
     isDragging: () => !!drag,
-    cancel() {
-      if (!drag) return;
-      const d = finish();
-      if (d && d.kind === 'size') o.setDims(d.card, d.startW, d.startH);
-      if (o.onCancel) o.onCancel();
-    },
+    cancel,
   };
 }
